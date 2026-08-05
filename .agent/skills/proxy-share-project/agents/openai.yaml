@@ -1,0 +1,4 @@
+interface:
+  display_name: "Proxy Share 项目导航"
+  short_description: "维护项目架构地图并规范代码修改、验证流程与中文提交纪律"
+  default_prompt: "使用 $proxy-share-project 修改 Proxy Share，并同步项目地图。"

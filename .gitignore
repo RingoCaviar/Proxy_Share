@@ -1,0 +1,13 @@
+# 编译产物
+/ProxyShare.exe
+/*.pdb
+
+# 未使用的大型历史素材
+/logo.jpg
+
+# 编辑器与系统文件
+.vs/
+.vscode/
+*.user
+Thumbs.db
+Desktop.ini
