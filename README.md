@@ -2,6 +2,10 @@
 
 轻量的 Windows 系统代理开关，使用原生 WinForms 构建，无第三方运行时依赖。
 
+## 🖼️ 界面预览
+
+![Proxy Share 软件界面](docs/proxy-share-ui.jpg)
+
 ## ✨ 特性
 
 - 🎨 Windows 11 风格，自动跟随系统深浅色主题
