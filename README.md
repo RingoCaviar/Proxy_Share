@@ -20,6 +20,19 @@ compile.bat
 
 构建结果为 `ProxyShare.exe`。
 
+当前版本记录在 [`VERSION`](VERSION) 中，构建产物的文件版本与程序集版本会自动采用该值。
+
+## 📦 发布
+
+发布新版本时，先更新 `VERSION`（格式为 `X.Y.Z`）并提交，然后创建并推送同版本 tag：
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+GitHub Actions 会自动运行测试、编译 Windows EXE，并创建 GitHub Release。Release 包含单独的 `ProxyShare.exe`、ZIP 压缩包及 SHA-256 校验文件。tag 版本必须与 `VERSION` 完全一致。
+
 ## 🚀 使用
 
 填写代理 IP 和端口，拨动“系统代理”开关即可应用；点击“测试连接”可检查代理是否可用。

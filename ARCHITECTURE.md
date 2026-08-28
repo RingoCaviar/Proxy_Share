@@ -10,6 +10,8 @@ Proxy Share 是一个零第三方依赖的 Windows 桌面小工具，通过当�
 - 程序入口：`Program.Main()`
 - 主源码：`HelloMessageBox.cs`、`ProxyTakeoverLifecycle.cs`
 - 构建入口：`compile.bat`
+- 版本来源：`VERSION`；构建时写入 EXE 程序集元数据
+- 发布入口：推送 `vX.Y.Z` tag 后由 `.github/workflows/release.yml` 自动创建 GitHub Release
 - 测试入口：`test.bat`
 - 产物：`ProxyShare.exe`（不纳入版本控制）
 

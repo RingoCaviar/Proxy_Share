@@ -1,0 +1,60 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Validate tag and version
+        shell: pwsh
+        run: |
+          $version = (Get-Content -Raw VERSION).Trim()
+          $tagVersion = "${{ github.ref_name }}".TrimStart('v')
+          if ($version -notmatch '^\d+\.\d+\.\d+$') {
+            throw "VERSION must use X.Y.Z format; got '$version'."
+          }
+          if ($tagVersion -ne $version) {
+            throw "Tag version '$tagVersion' does not match VERSION '$version'."
+          }
+
+      - name: Run tests
+        shell: cmd
+        run: test.bat
+
+      - name: Build application
+        shell: cmd
+        run: compile.bat
+
+      - name: Package artifacts
+        shell: pwsh
+        run: |
+          $version = (Get-Content -Raw VERSION).Trim()
+          Compress-Archive -Path ProxyShare.exe, README.md -DestinationPath "ProxyShare-v$version-windows.zip"
+          Get-FileHash ProxyShare.exe -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash.ToLower())  ProxyShare.exe" } |
+            Set-Content -Encoding ascii "ProxyShare-v$version-SHA256.txt"
+
+      - name: Create GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = (Get-Content -Raw VERSION).Trim()
+          gh release create "${{ github.ref_name }}" `
+            ProxyShare.exe `
+            "ProxyShare-v$version-windows.zip" `
+            "ProxyShare-v$version-SHA256.txt" `
+            --title "Proxy Share v$version" `
+            --generate-notes `
+            --verify-tag
