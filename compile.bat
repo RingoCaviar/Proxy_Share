@@ -20,7 +20,8 @@ set "CSC=%FRAMEWORK%\csc.exe"
     /reference:"%FRAMEWORK%\System.dll" ^
     /reference:"%FRAMEWORK%\System.Drawing.dll" ^
     /reference:"%FRAMEWORK%\System.Windows.Forms.dll" ^
-    "%SRC%"
+    "%SRC%" ^
+    "ProxyTakeoverLifecycle.cs"
 
 if errorlevel 1 (
     echo 编译失败。
