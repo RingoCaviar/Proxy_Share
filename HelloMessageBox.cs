@@ -334,6 +334,7 @@ internal sealed class MainForm : Form
 {
     private const string ApplicationSettingsPath = @"Software\ProxyShare";
     private const string ThemePath = @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
+    private const string ProxyMismatchMessage = "当前系统代理设置不正确，请重启开关。";
 
     private readonly Label titleLabel;
     private readonly Label subtitleLabel;
@@ -576,11 +577,31 @@ internal sealed class MainForm : Form
             currentProxyLabel.Text = current.GetSummary();
             currentProxyToolTip.SetToolTip(currentProxyLabel, current.GetDetails());
         }
-        if (result.Message != null)
+        string address;
+        int port;
+        string endpointError;
+        bool proxyMismatch = current != null && current.ProxyEnabled &&
+            TryGetEndpoint(out address, out port, out endpointError) &&
+            !current.UsesEndpoint(new ProxyEndpoint(address, port));
+        if (result.NoticeKind == ProxyTakeoverNoticeKind.Error && result.Message != null)
         {
             validationLabel.Text = result.Message;
-            validationLabel.ForeColor = result.NoticeKind == ProxyTakeoverNoticeKind.Error ? palette.Error :
-                (result.NoticeKind == ProxyTakeoverNoticeKind.Warning ? palette.Warning : palette.Success);
+            validationLabel.ForeColor = palette.Error;
+        }
+        else if (proxyMismatch)
+        {
+            validationLabel.Text = ProxyMismatchMessage;
+            validationLabel.ForeColor = palette.Warning;
+        }
+        else if (result.Message != null)
+        {
+            validationLabel.Text = result.Message;
+            validationLabel.ForeColor = result.NoticeKind == ProxyTakeoverNoticeKind.Warning ?
+                palette.Warning : palette.Success;
+        }
+        else if (validationLabel.Text == ProxyMismatchMessage)
+        {
+            validationLabel.Text = "";
         }
     }
 
@@ -821,6 +842,13 @@ internal sealed class ProxyConfiguration
         return proxyOverride.Exists ? proxyOverride.Value : null;
     }
 
+    public bool UsesEndpoint(ProxyEndpoint endpoint)
+    {
+        return ProxyEnabled && proxyServer.Exists &&
+            string.Equals(proxyServer.Value, endpoint.GetServerAddress(),
+                StringComparison.OrdinalIgnoreCase);
+    }
+
     public void UseManualProxy(string server, string bypass)
     {
         proxyEnable = new OptionalRegistryValue<int>(true, 1);
@@ -1027,6 +1055,16 @@ internal sealed class ProxyEndpoint
     public readonly string Address;
     public readonly int Port;
     public ProxyEndpoint(string address, int port) { Address = address; Port = port; }
+
+    public string GetServerAddress()
+    {
+        IPAddress parsed;
+        string host = IPAddress.TryParse(Address, out parsed) &&
+            parsed.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6
+            ? "[" + Address + "]"
+            : Address;
+        return host + ":" + Port;
+    }
 }
 
 internal enum TestResultKind { Success, Warning, Error }

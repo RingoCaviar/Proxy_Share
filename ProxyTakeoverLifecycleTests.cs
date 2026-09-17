@@ -24,6 +24,7 @@ internal static class ProxyTakeoverLifecycleTests
         Run("重新启用失败后仍保持接管状态", FailedReenableRemainsManaged);
         Run("恢复失败后仍保持接管状态", FailedRestoreRemainsManaged);
         Run("未接管时退出记录失败仍保持未接管", UnmanagedCleanExitFailureStaysUnmanaged);
+        Run("系统代理端点可与软件配置比较", ProxyEndpointComparison);
         Console.WriteLine(failures == 0 ? "全部生命周期测试通过。" : failures + " 个测试失败。");
         return failures == 0 ? 0 : 1;
     }
@@ -230,6 +231,16 @@ internal static class ProxyTakeoverLifecycleTests
         ProxyTakeoverResult result = new ProxyTakeoverLifecycle(store).MarkCleanExit();
         Equal(ProxyTakeoverNoticeKind.Error, result.NoticeKind);
         Equal(ProxyTakeoverState.Unmanaged, result.State);
+    }
+
+    private static void ProxyEndpointComparison()
+    {
+        ProxyConfiguration configuration = Disabled("old:80");
+        configuration.UseManualProxy("proxy.local:7897", null);
+
+        True(configuration.UsesEndpoint(new ProxyEndpoint("PROXY.LOCAL", 7897)));
+        False(configuration.UsesEndpoint(new ProxyEndpoint("proxy.local", 8080)));
+        Equal("[2001:db8::1]:7897", new ProxyEndpoint("2001:db8::1", 7897).GetServerAddress());
     }
 
     private static ProxyConfiguration Disabled(string server)

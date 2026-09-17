@@ -118,12 +118,7 @@ internal sealed class ProxyTakeoverLifecycle
             }
         }
         ProxyConfiguration desired = original.Clone();
-        IPAddress parsed;
-        string address = IPAddress.TryParse(endpoint.Address, out parsed) &&
-            parsed.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6
-            ? "[" + endpoint.Address + "]"
-            : endpoint.Address;
-        desired.UseManualProxy(address + ":" + endpoint.Port,
+        desired.UseManualProxy(endpoint.GetServerAddress(),
             MergeBypass(original.GetProxyOverrideOrNull()));
         try
         {
