@@ -34,6 +34,7 @@ internal sealed class ThemePalette
     public Color AccentText;
     public Color Success;
     public Color Warning;
+    public Color WarningBackground;
     public Color Error;
     public Color SwitchOff;
 
@@ -53,6 +54,7 @@ internal sealed class ThemePalette
         palette.AccentText = light ? Color.White : Color.FromArgb(0, 35, 53);
         palette.Success = light ? Color.FromArgb(15, 123, 15) : Color.FromArgb(108, 203, 95);
         palette.Warning = light ? Color.FromArgb(157, 93, 0) : Color.FromArgb(255, 185, 81);
+        palette.WarningBackground = light ? Color.FromArgb(255, 239, 207) : Color.FromArgb(79, 54, 24);
         palette.Error = light ? Color.FromArgb(196, 43, 28) : Color.FromArgb(255, 153, 164);
         palette.SwitchOff = light ? Color.FromArgb(120, 120, 120) : Color.FromArgb(145, 145, 145);
         return palette;
@@ -334,7 +336,6 @@ internal sealed class MainForm : Form
 {
     private const string ApplicationSettingsPath = @"Software\ProxyShare";
     private const string ThemePath = @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
-    private const string ProxyMismatchMessage = "当前系统代理设置不正确，请重启开关。";
 
     private readonly Label titleLabel;
     private readonly Label subtitleLabel;
@@ -352,6 +353,10 @@ internal sealed class MainForm : Form
     private readonly Label switchTitleLabel;
     private readonly Label switchHintLabel;
     private readonly ToggleSwitch proxySwitch;
+    private readonly Panel mismatchPanel;
+    private readonly Label mismatchTitleLabel;
+    private readonly Label mismatchDetailLabel;
+    private readonly Label mismatchConfiguredLabel;
     private readonly AccentButton testButton;
     private readonly Label resultLabel;
     private readonly BackgroundWorker testWorker;
@@ -360,12 +365,13 @@ internal sealed class MainForm : Form
     private bool lightTheme;
     private bool suppressToggle;
     private bool activatedOnce;
+    private ProxyConfiguration currentConfiguration;
 
     public MainForm()
     {
         Text = "局域网代理共享";
         ClientSize = new Size(380, 410);
-        MinimumSize = new Size(356, 419);
+        MinimumSize = new Size(356, 450);
         MaximumSize = new Size(536, 529);
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.Sizable;
@@ -399,6 +405,16 @@ internal sealed class MainForm : Form
         switchHintLabel = MakeLabel("拨动开关立即应用当前配置", 8.5F, FontStyle.Regular);
         proxySwitch = new ToggleSwitch();
         proxySwitch.ToggleChanged += ProxySwitchChanged;
+        mismatchPanel = new Panel();
+        mismatchPanel.Visible = false;
+        mismatchTitleLabel = MakeLabel("⚠ 当前填写的代理未生效", 9F, FontStyle.Bold);
+        mismatchDetailLabel = MakeLabel("", 8.5F, FontStyle.Regular);
+        mismatchConfiguredLabel = MakeLabel("", 8.5F, FontStyle.Regular);
+        mismatchDetailLabel.AutoEllipsis = true;
+        mismatchConfiguredLabel.AutoEllipsis = true;
+        mismatchPanel.Controls.Add(mismatchTitleLabel);
+        mismatchPanel.Controls.Add(mismatchDetailLabel);
+        mismatchPanel.Controls.Add(mismatchConfiguredLabel);
 
         testButton = new AccentButton();
         testButton.Text = "测试连接";
@@ -422,6 +438,7 @@ internal sealed class MainForm : Form
         Controls.Add(switchTitleLabel);
         Controls.Add(switchHintLabel);
         Controls.Add(proxySwitch);
+        Controls.Add(mismatchPanel);
         Controls.Add(testButton);
         Controls.Add(resultLabel);
 
@@ -429,6 +446,8 @@ internal sealed class MainForm : Form
         testWorker.DoWork += TestWorkerDoWork;
         testWorker.RunWorkerCompleted += TestWorkerCompleted;
         proxyLifecycle = new ProxyTakeoverLifecycle();
+        addressBox.TextChanged += delegate { UpdateProxyMismatch(); };
+        portBox.TextChanged += delegate { UpdateProxyMismatch(); };
 
         lightTheme = IsSystemLightTheme();
         ApplyTheme();
@@ -474,15 +493,23 @@ internal sealed class MainForm : Form
         if (titleLabel == null) return;
         int contentWidth = ClientSize.Width - 40;
         int left = 20;
+        bool showMismatch = mismatchPanel != null && mismatchPanel.Visible;
+        int cardY = showMismatch ? 128 : 108;
+        int switchY = cardY + 132;
 
         titleLabel.SetBounds(left, 18, contentWidth - 100, 30);
-        subtitleLabel.SetBounds(left, 49, contentWidth, 20);
+        subtitleLabel.SetBounds(left, 52, contentWidth, 20);
         statusDot.SetBounds(ClientSize.Width - 106, 24, 16, 20);
         statusLabel.SetBounds(ClientSize.Width - 88, 24, 68, 20);
-        currentProxyCaptionLabel.SetBounds(left, 72, 92, 19);
-        currentProxyLabel.SetBounds(left + 96, 72, contentWidth - 96, 19);
+        currentProxyCaptionLabel.SetBounds(left, 77, 92, 19);
+        currentProxyLabel.SetBounds(left + 96, 77, contentWidth - 96, 19);
 
-        card.SetBounds(left, 104, contentWidth, 120);
+        mismatchPanel.SetBounds(left, 56, contentWidth, 60);
+        mismatchTitleLabel.SetBounds(12, 2, contentWidth - 24, 18);
+        mismatchDetailLabel.SetBounds(12, 20, contentWidth - 24, 18);
+        mismatchConfiguredLabel.SetBounds(12, 39, contentWidth - 24, 18);
+
+        card.SetBounds(left, cardY, contentWidth, 112);
         int innerWidth = card.Width - 32;
         int portWidth = Math.Min(94, Math.Max(76, innerWidth / 3));
         int gap = 12;
@@ -493,11 +520,12 @@ internal sealed class MainForm : Form
         portBox.SetBounds(16 + addressWidth + gap, 35, portWidth, 34);
         validationLabel.SetBounds(16, 78, innerWidth, 27);
 
-        switchTitleLabel.SetBounds(left, 244, contentWidth - 70, 21);
-        switchHintLabel.SetBounds(left, 266, contentWidth - 60, 38);
-        proxySwitch.Location = new Point(ClientSize.Width - 64, 249);
+        switchTitleLabel.SetBounds(left, switchY, contentWidth - 70, 21);
+        switchHintLabel.SetBounds(left, switchY + 23, contentWidth - 60, 36);
+        proxySwitch.Location = new Point(ClientSize.Width - 64, switchY + 5);
 
-        int buttonY = ClientSize.Height - 78;
+        int buttonY = Math.Max(ClientSize.Height - (showMismatch ? 74 : 80),
+            switchHintLabel.Bottom + 17);
         testButton.SetBounds(left, buttonY, contentWidth, 38);
         resultLabel.SetBounds(left, buttonY + 42, contentWidth, 23);
     }
@@ -517,6 +545,10 @@ internal sealed class MainForm : Form
         validationLabel.ForeColor = palette.Error;
         switchTitleLabel.ForeColor = palette.Text;
         switchHintLabel.ForeColor = palette.MutedText;
+        mismatchPanel.BackColor = palette.WarningBackground;
+        mismatchTitleLabel.ForeColor = palette.Warning;
+        mismatchDetailLabel.ForeColor = palette.Text;
+        mismatchConfiguredLabel.ForeColor = palette.Text;
         resultLabel.ForeColor = palette.MutedText;
         card.ApplyTheme(palette);
         addressBox.ApplyTheme(palette);
@@ -566,32 +598,20 @@ internal sealed class MainForm : Form
     private void ApplyTakeoverResult(ProxyTakeoverResult result)
     {
         ProxyConfiguration current = result.Configuration;
+        currentConfiguration = current;
         if (current != null)
         {
             suppressToggle = true;
             proxySwitch.SetState(current.ProxyEnabled, false);
             suppressToggle = false;
-            statusDot.ForeColor = current.ProxyEnabled ? palette.Success : palette.MutedText;
-            statusLabel.Text = current.ProxyEnabled ? "已开启" : "已关闭";
-            statusLabel.ForeColor = current.ProxyEnabled ? palette.Success : palette.MutedText;
             currentProxyLabel.Text = current.GetSummary();
             currentProxyToolTip.SetToolTip(currentProxyLabel, current.GetDetails());
         }
-        string address;
-        int port;
-        string endpointError;
-        bool proxyMismatch = current != null && current.ProxyEnabled &&
-            TryGetEndpoint(out address, out port, out endpointError) &&
-            !current.UsesEndpoint(new ProxyEndpoint(address, port));
+        UpdateProxyMismatch();
         if (result.NoticeKind == ProxyTakeoverNoticeKind.Error && result.Message != null)
         {
             validationLabel.Text = result.Message;
             validationLabel.ForeColor = palette.Error;
-        }
-        else if (proxyMismatch)
-        {
-            validationLabel.Text = ProxyMismatchMessage;
-            validationLabel.ForeColor = palette.Warning;
         }
         else if (result.Message != null)
         {
@@ -599,10 +619,42 @@ internal sealed class MainForm : Form
             validationLabel.ForeColor = result.NoticeKind == ProxyTakeoverNoticeKind.Warning ?
                 palette.Warning : palette.Success;
         }
-        else if (validationLabel.Text == ProxyMismatchMessage)
+    }
+
+    private void UpdateProxyMismatch()
+    {
+        if (palette == null || mismatchPanel == null) return;
+        string address;
+        int port;
+        string endpointError;
+        bool validEndpoint = TryGetEndpoint(out address, out port, out endpointError);
+        bool proxyMismatch = currentConfiguration != null && currentConfiguration.ProxyEnabled &&
+            (!validEndpoint || !currentConfiguration.UsesEndpoint(new ProxyEndpoint(address, port)));
+        bool visibilityChanged = mismatchPanel.Visible != proxyMismatch;
+        mismatchPanel.Visible = proxyMismatch;
+        if (proxyMismatch)
         {
-            validationLabel.Text = "";
+            mismatchDetailLabel.Text = "系统当前代理：" + currentConfiguration.GetSummary();
+            mismatchConfiguredLabel.Text = validEndpoint
+                ? "界面填写代理：" + new ProxyEndpoint(address, port).GetServerAddress()
+                : "界面填写代理：地址或端口无效";
+            currentProxyToolTip.SetToolTip(mismatchDetailLabel, mismatchDetailLabel.Text);
+            currentProxyToolTip.SetToolTip(mismatchConfiguredLabel, mismatchConfiguredLabel.Text);
         }
+        subtitleLabel.Visible = !proxyMismatch;
+        currentProxyCaptionLabel.Visible = !proxyMismatch;
+        currentProxyLabel.Visible = !proxyMismatch;
+        switchHintLabel.Text = proxyMismatch
+            ? "关闭后重新开启开关，以应用填写的代理。"
+            : "拨动开关立即应用当前配置";
+        switchHintLabel.ForeColor = proxyMismatch ? palette.Warning : palette.MutedText;
+        if (visibilityChanged) LayoutControls();
+        statusDot.ForeColor = proxyMismatch ? palette.Warning :
+            (currentConfiguration != null && currentConfiguration.ProxyEnabled ? palette.Success : palette.MutedText);
+        statusLabel.Text = proxyMismatch ? "未生效" :
+            (currentConfiguration == null ? "无法确认" :
+                (currentConfiguration.ProxyEnabled ? "已开启" : "已关闭"));
+        statusLabel.ForeColor = statusDot.ForeColor;
     }
 
     private bool TryGetEndpoint(out string address, out int port, out string error)
