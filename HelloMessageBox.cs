@@ -364,6 +364,12 @@ internal sealed class AccentButton : Button
 
     protected override void OnPaint(PaintEventArgs e)
     {
+        // Button is opaque: WinForms skips OnPaintBackground, so the rounded
+        // corners must be painted too instead of exposing reused buffer pixels.
+        Color background = Parent is CardPanel && palette != null ? palette.Card :
+            (Parent == null ? BackColor : Parent.BackColor);
+        using (SolidBrush brush = new SolidBrush(background))
+            e.Graphics.FillRectangle(brush, ClientRectangle);
         e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
         Color fill;
         Color text;

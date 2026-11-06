@@ -50,6 +50,7 @@ internal static class ProxyTakeoverLifecycleTests
         Run("旧恢复快照转换保留完整配置", LegacyRecoveryConversion);
         Run("退出软件及正常重启均保持代理设置", ExitAndRestartKeepProxy);
         Run("缩放期间临时窄布局不会设置零下拉宽度", TransientNarrowLayoutKeepsValidDropdown);
+        Run("圆角按钮首次绘制及缩放后不残留旧像素", RoundedButtonsPaintTheirEntireBackground);
         Run("开关支持键盘和可访问状态", SwitchKeyboardAndAccessibility);
         Run("编辑窗口空状态提供添加入口", EditorEmptyStateHasAddAction);
         Console.WriteLine(failures == 0 ? "全部生命周期测试通过。" : failures + " 个测试失败。");
@@ -89,6 +90,53 @@ internal static class ProxyTakeoverLifecycleTests
             form.ClientSize = new System.Drawing.Size(420, 430);
             System.Windows.Forms.ComboBox restored = FindControl<System.Windows.Forms.ComboBox>(form);
             Equal(restored.Width, restored.DropDownWidth);
+        }
+    }
+
+    private static void RoundedButtonsPaintTheirEntireBackground()
+    {
+        FakeProxyTakeoverStore store = new FakeProxyTakeoverStore(Disabled("old:80"));
+        using (MainForm form = new MainForm(new ProxyTakeoverLifecycle(store), ProxyHostCatalog.Defaults(), delegate { }))
+        {
+            System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            AccentButton edit = (AccentButton)typeof(MainForm).GetField("editHostsButton", flags).GetValue(form);
+            AccentButton test = (AccentButton)typeof(MainForm).GetField("testButton", flags).GetValue(form);
+            // Exercise WM_PRINT/DrawToBitmap with real handles, without showing the form or touching Windows proxy settings.
+            IntPtr handle = form.Handle;
+            handle = edit.Parent.Handle;
+            handle = edit.Handle;
+            handle = test.Handle;
+            foreach (bool light in new bool[] { false, true })
+            {
+                typeof(MainForm).GetField("lightTheme", flags).SetValue(form, light);
+                typeof(MainForm).GetMethod("ApplyTheme", flags).Invoke(form, null);
+                ThemePalette theme = ThemePalette.Create(light);
+                foreach (int width in new int[] { 380, 420, 620, 380 })
+                {
+                    form.ClientSize = new System.Drawing.Size(width, 430);
+                    form.PerformLayout();
+                    AssertButtonCorners(edit, theme.Card);
+                    AssertButtonCorners(test, theme.Window);
+                }
+            }
+        }
+    }
+
+    private static void AssertButtonCorners(AccentButton button, System.Drawing.Color background)
+    {
+        foreach (System.Drawing.Color previousFrame in new System.Drawing.Color[] { System.Drawing.Color.Magenta, System.Drawing.Color.White })
+        using (System.Drawing.Bitmap bitmap = new System.Drawing.Bitmap(button.Width, button.Height))
+        {
+            using (System.Drawing.Graphics graphics = System.Drawing.Graphics.FromImage(bitmap)) graphics.Clear(previousFrame);
+            button.DrawToBitmap(bitmap, button.ClientRectangle);
+            foreach (System.Drawing.Point corner in new System.Drawing.Point[] {
+                new System.Drawing.Point(0, 0), new System.Drawing.Point(button.Width - 1, 0),
+                new System.Drawing.Point(0, button.Height - 1), new System.Drawing.Point(button.Width - 1, button.Height - 1) })
+            {
+                System.Drawing.Color actual = bitmap.GetPixel(corner.X, corner.Y);
+                if (actual.ToArgb() != background.ToArgb())
+                    throw new Exception(button.Text + "圆角背景错误：期望 " + background + "，实际 " + actual);
+            }
         }
     }
 
