@@ -48,6 +48,8 @@ internal static class ProxyTakeoverLifecycleTests
         Run("恢复快照和退出标记通过文件完整保存", TakeoverFileRoundTrip);
         Run("文件保存失败不会破坏已有数据", FileSaveFailureKeepsExistingData);
         Run("旧恢复快照转换保留完整配置", LegacyRecoveryConversion);
+        Run("开关支持键盘和可访问状态", SwitchKeyboardAndAccessibility);
+        Run("编辑窗口空状态提供添加入口", EditorEmptyStateHasAddAction);
         Console.WriteLine(failures == 0 ? "全部生命周期测试通过。" : failures + " 个测试失败。");
         return failures == 0 ? 0 : 1;
     }
@@ -61,6 +63,43 @@ internal static class ProxyTakeoverLifecycleTests
         ProxyTakeoverResult restored = lifecycle.DisableOrRestore();
         Equal("old:80", restored.Configuration.ProxyServer);
         False(store.HasTakeover);
+    }
+
+    private static void SwitchKeyboardAndAccessibility()
+    {
+        using (ToggleSwitch toggle = new ToggleSwitch())
+        {
+            int changes = 0;
+            toggle.ToggleChanged += delegate { changes++; };
+            System.Reflection.MethodInfo down = typeof(ToggleSwitch).GetMethod("OnKeyDown", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            System.Reflection.MethodInfo up = typeof(ToggleSwitch).GetMethod("OnKeyUp", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            down.Invoke(toggle, new object[] { new System.Windows.Forms.KeyEventArgs(System.Windows.Forms.Keys.Space) });
+            down.Invoke(toggle, new object[] { new System.Windows.Forms.KeyEventArgs(System.Windows.Forms.Keys.Space) });
+            up.Invoke(toggle, new object[] { new System.Windows.Forms.KeyEventArgs(System.Windows.Forms.Keys.Space) });
+            Equal(true, toggle.IsOn);
+            Equal(1, changes);
+            Equal(true, (toggle.AccessibilityObject.State & System.Windows.Forms.AccessibleStates.Checked) != 0);
+            down.Invoke(toggle, new object[] { new System.Windows.Forms.KeyEventArgs(System.Windows.Forms.Keys.Enter) });
+            up.Invoke(toggle, new object[] { new System.Windows.Forms.KeyEventArgs(System.Windows.Forms.Keys.Enter) });
+            False(toggle.IsOn);
+            Equal(2, changes);
+            toggle.AccessibilityObject.DoDefaultAction();
+            Equal(true, toggle.IsOn);
+            toggle.Enabled = false;
+            toggle.AccessibilityObject.DoDefaultAction();
+            Equal(3, changes);
+        }
+    }
+
+    private static void EditorEmptyStateHasAddAction()
+    {
+        using (ProxyHostEditor editor = new ProxyHostEditor(ProxyHostCatalog.Defaults(), ThemePalette.Create(true)))
+        {
+            System.Windows.Forms.DataGridView grid = FindControl<System.Windows.Forms.DataGridView>(editor);
+            Equal(0, grid.Rows.Count);
+            Equal(true, HasLabel(grid, "尚未添加自定义主机\r\n添加常用代理后，可在主界面快速切换。"));
+            Equal(true, FindControl<System.Windows.Forms.Button>(grid) != null);
+        }
     }
 
     private static void LegacyRecoveryConversion()

@@ -32,6 +32,7 @@ if not defined APP_VERSION (
     /reference:"%FRAMEWORK%\System.dll" ^
     /reference:"%FRAMEWORK%\System.Drawing.dll" ^
     /reference:"%FRAMEWORK%\System.Windows.Forms.dll" ^
+    /reference:"%FRAMEWORK%\Accessibility.dll" ^
     "%SRC%" ^
     "ProxyTakeoverLifecycle.cs" ^
     "ProxyHosts.cs" ^

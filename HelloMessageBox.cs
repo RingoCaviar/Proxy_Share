@@ -187,6 +187,7 @@ internal sealed class ToggleSwitch : Control
     private ThemePalette palette;
 
     public event EventHandler ToggleChanged;
+    private bool keyArmed;
 
     public bool IsOn
     {
@@ -200,6 +201,9 @@ internal sealed class ToggleSwitch : Control
         MinimumSize = Size;
         MaximumSize = Size;
         Cursor = Cursors.Hand;
+        TabStop = true;
+        AccessibleRole = AccessibleRole.CheckButton;
+        SetStyle(ControlStyles.Selectable, true);
         SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint |
                  ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
         timer = new Timer();
@@ -215,7 +219,10 @@ internal sealed class ToggleSwitch : Control
 
     public void SetState(bool value, bool animate)
     {
+        bool changed = isOn != value;
         isOn = value;
+        AccessibleDescription = value ? "已使用所选主机；关闭后恢复原代理设置" : "未使用所选主机；按空格启用";
+        if (changed) AccessibilityNotifyClients(AccessibleEvents.StateChange, -1);
         animationTarget = value ? 100 : 0;
         if (animate)
         {
@@ -241,8 +248,59 @@ internal sealed class ToggleSwitch : Control
     {
         base.OnClick(e);
         if (!Enabled) return;
+        Focus();
         SetState(!isOn, true);
         if (ToggleChanged != null) ToggleChanged(this, EventArgs.Empty);
+    }
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        if (e.KeyCode == Keys.Space || e.KeyCode == Keys.Enter)
+        {
+            keyArmed = true;
+            e.Handled = true;
+            e.SuppressKeyPress = true;
+        }
+        base.OnKeyDown(e);
+    }
+
+    protected override void OnKeyUp(KeyEventArgs e)
+    {
+        if (e.KeyCode == Keys.Space || e.KeyCode == Keys.Enter)
+        {
+            if (keyArmed && Enabled) OnClick(EventArgs.Empty);
+            keyArmed = false;
+            e.Handled = true;
+        }
+        base.OnKeyUp(e);
+    }
+
+    protected override bool IsInputKey(Keys keyData)
+    {
+        return (keyData & Keys.KeyCode) == Keys.Enter || base.IsInputKey(keyData);
+    }
+
+    protected override void OnGotFocus(EventArgs e) { base.OnGotFocus(e); Invalidate(); }
+    protected override void OnLostFocus(EventArgs e) { keyArmed = false; base.OnLostFocus(e); Invalidate(); }
+
+    protected override AccessibleObject CreateAccessibilityInstance() { return new SwitchAccessibleObject(this); }
+
+    private sealed class SwitchAccessibleObject : ControlAccessibleObject
+    {
+        private readonly ToggleSwitch owner;
+        public SwitchAccessibleObject(ToggleSwitch control) : base(control) { owner = control; }
+        public override AccessibleStates State
+        {
+            get { return base.State | (owner.IsOn ? AccessibleStates.Checked : AccessibleStates.None); }
+        }
+        public override string DefaultAction { get { return "切换"; } }
+        public override void DoDefaultAction() { if (owner.Enabled) owner.OnClick(EventArgs.Empty); }
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) timer.Dispose();
+        base.Dispose(disposing);
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -261,6 +319,8 @@ internal sealed class ToggleSwitch : Control
         Rectangle knob = new Rectangle(knobX, 3, 18, 18);
         using (SolidBrush knobBrush = new SolidBrush(Color.White))
             e.Graphics.FillEllipse(knobBrush, knob);
+        if (Focused) ControlPaint.DrawFocusRectangle(e.Graphics, ClientRectangle,
+            palette == null ? ForeColor : palette.Text, BackColor);
     }
 
     private static Color Blend(Color first, Color second, float amount)
@@ -274,6 +334,7 @@ internal sealed class ToggleSwitch : Control
 
 internal sealed class AccentButton : Button
 {
+    public bool Secondary;
     private ThemePalette palette;
     private bool hovered;
     private bool pressed;
@@ -318,8 +379,9 @@ internal sealed class AccentButton : Button
         }
         else
         {
-            fill = pressed ? palette.AccentPressed : (hovered ? palette.AccentHover : palette.Accent);
-            text = palette.AccentText;
+            fill = Secondary ? (hovered || pressed ? palette.Input : palette.Card)
+                : (pressed ? palette.AccentPressed : (hovered ? palette.AccentHover : palette.Accent));
+            text = Secondary ? palette.Text : palette.AccentText;
         }
 
         Rectangle bounds = new Rectangle(0, 0, Width - 1, Height - 1);
@@ -327,8 +389,14 @@ internal sealed class AccentButton : Button
         using (SolidBrush brush = new SolidBrush(fill))
             e.Graphics.FillPath(brush, path);
 
+        if (Secondary && palette != null)
+            using (GraphicsPath path = DrawingTools.RoundedRectangle(bounds, 5))
+            using (Pen pen = new Pen(palette.Border)) e.Graphics.DrawPath(pen, path);
+
         TextRenderer.DrawText(e.Graphics, Text, Font, ClientRectangle, text,
             TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
+        if (Focused && ShowFocusCues) ControlPaint.DrawFocusRectangle(e.Graphics,
+            Rectangle.Inflate(ClientRectangle, -4, -4), text, fill);
     }
 }
 
@@ -360,6 +428,7 @@ internal sealed class MainForm : Form
     private ProxyEndpoint testedEndpoint;
     private bool suppressSelection;
     private readonly Label validationLabel;
+    private readonly LinkLabel validationDetails;
     private readonly Label switchTitleLabel;
     private readonly Label switchHintLabel;
     private readonly ToggleSwitch proxySwitch;
@@ -386,9 +455,9 @@ internal sealed class MainForm : Form
     internal MainForm(ProxyTakeoverLifecycle lifecycle, ProxyHostCatalog catalog, Action<ProxyHostCatalog> saveCatalog)
     {
         Text = "局域网代理共享";
-        ClientSize = new Size(420, 470);
-        MinimumSize = new Size(396, 509);
-        MaximumSize = new Size(636, 649);
+        ClientSize = new Size(420, 430);
+        MinimumSize = new Size(396, 469);
+        MaximumSize = new Size(636, 749);
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.Sizable;
         AutoScaleMode = AutoScaleMode.Dpi;
@@ -423,6 +492,7 @@ internal sealed class MainForm : Form
         hostCombo.SelectedIndexChanged += HostSelectionChanged;
         editHostsButton = new AccentButton();
         editHostsButton.Text = "编辑";
+        editHostsButton.Secondary = true;
         editHostsButton.Click += EditHostsClick;
         latencyButton = new LinkLabel();
         latencyButton.Text = "测试所有延迟";
@@ -433,8 +503,15 @@ internal sealed class MainForm : Form
         conflictLabel = MakeLabel("检测到您当前正在运行其他代理软件，请关闭其他代理软件后再使用。", 9F, FontStyle.Regular);
         conflictLabel.Visible = false;
         validationLabel = MakeLabel("", 8.5F, FontStyle.Regular);
+        validationLabel.AutoEllipsis = true;
+        validationDetails = new LinkLabel();
+        validationDetails.Text = "查看完整提示";
+        validationDetails.BackColor = Color.Transparent;
+        validationDetails.Visible = false;
+        validationDetails.LinkClicked += delegate { MessageBox.Show(this, validationLabel.Text,
+            "代理设置详情", MessageBoxButtons.OK, MessageBoxIcon.Information); };
 
-        switchTitleLabel = MakeLabel("系统代理", 10F, FontStyle.Bold);
+        switchTitleLabel = MakeLabel("使用所选主机", 10F, FontStyle.Bold);
         switchHintLabel = MakeLabel("拨动开关立即应用当前配置", 8.5F, FontStyle.Regular);
         proxySwitch = new ToggleSwitch();
         proxySwitch.AccessibleName = "启用所选主机的系统代理";
@@ -452,6 +529,7 @@ internal sealed class MainForm : Form
 
         testButton = new AccentButton();
         testButton.Text = "测试连接";
+        testButton.Secondary = true;
         testButton.Height = 38;
         testButton.Click += TestButtonClick;
         resultLabel = MakeLabel("", 9F, FontStyle.Regular);
@@ -472,6 +550,7 @@ internal sealed class MainForm : Form
         card.Controls.Add(editHostsButton);
         card.Controls.Add(latencyButton);
         card.Controls.Add(validationLabel);
+        card.Controls.Add(validationDetails);
         Controls.Add(switchTitleLabel);
         Controls.Add(switchHintLabel);
         Controls.Add(proxySwitch);
@@ -479,6 +558,14 @@ internal sealed class MainForm : Form
         Controls.Add(testButton);
         Controls.Add(resultLabel);
         Controls.Add(conflictLabel);
+        card.TabIndex = 0;
+        hostCombo.TabIndex = 0;
+        editHostsButton.TabIndex = 1;
+        latencyButton.TabIndex = 2;
+        validationDetails.TabIndex = 3;
+        proxySwitch.TabIndex = 1;
+        testButton.TabIndex = 2;
+        validationLabel.TextChanged += delegate { currentProxyToolTip.SetToolTip(validationLabel, validationLabel.Text); LayoutControls(); };
 
         testWorker = new BackgroundWorker();
         testWorker.DoWork += TestWorkerDoWork;
@@ -551,7 +638,13 @@ internal sealed class MainForm : Form
         bool showMismatch = mismatchPanel != null && mismatchPanel.Visible;
         int conflictHeight = conflictLabel.Visible ? 52 : 0;
         int cardY = 108 + conflictHeight;
-        int switchY = cardY + 178 + (showMismatch ? 62 : 0);
+        int innerWidth = contentWidth - 32;
+        int messageHeight = string.IsNullOrEmpty(validationLabel.Text) ? 0 : TextRenderer.MeasureText(
+            validationLabel.Text, validationLabel.Font, new Size(innerWidth, int.MaxValue), TextFormatFlags.WordBreak).Height;
+        int visibleMessageHeight = Math.Min(messageHeight, 50);
+        bool needsDetails = messageHeight > visibleMessageHeight;
+        int cardHeight = messageHeight == 0 ? 146 : 146 + visibleMessageHeight + (needsDetails ? 24 : 0);
+        int switchY = cardY + cardHeight + 16 + (showMismatch ? 66 : 0);
 
         titleLabel.SetBounds(left, 18, contentWidth - 100, 30);
         subtitleLabel.SetBounds(left, 52, contentWidth, 20);
@@ -561,13 +654,12 @@ internal sealed class MainForm : Form
         currentProxyLabel.SetBounds(left + 96, 77, contentWidth - 96, 19);
 
         conflictLabel.SetBounds(left, 103, contentWidth, 46);
-        mismatchPanel.SetBounds(left, cardY + 174, contentWidth, 58);
+        mismatchPanel.SetBounds(left, cardY + cardHeight + 8, contentWidth, 58);
         mismatchTitleLabel.SetBounds(12, 2, contentWidth - 24, 18);
         mismatchDetailLabel.SetBounds(12, 20, contentWidth - 24, 18);
         mismatchConfiguredLabel.SetBounds(12, 39, contentWidth - 24, 18);
 
-        card.SetBounds(left, cardY, contentWidth, 166);
-        int innerWidth = card.Width - 32;
+        card.SetBounds(left, cardY, contentWidth, cardHeight);
         int portWidth = Math.Min(94, Math.Max(76, innerWidth / 3));
         int gap = 12;
         int addressWidth = innerWidth - portWidth - gap;
@@ -579,7 +671,10 @@ internal sealed class MainForm : Form
         addressPreview.SetBounds(16, 79, addressWidth, 24);
         portPreview.SetBounds(16 + addressWidth + gap, 79, portWidth, 24);
         latencyButton.SetBounds(card.Width - 140, 110, 124, 26);
-        validationLabel.SetBounds(16, 137, innerWidth, 27);
+        validationLabel.Visible = messageHeight > 0;
+        validationLabel.SetBounds(16, 140, innerWidth, visibleMessageHeight);
+        validationDetails.Visible = needsDetails;
+        validationDetails.SetBounds(16, validationLabel.Bottom + 2, innerWidth, 22);
 
         switchTitleLabel.SetBounds(left, switchY, contentWidth - 70, 21);
         switchHintLabel.SetBounds(left, switchY + 23, contentWidth - 60, 36);
@@ -622,6 +717,8 @@ internal sealed class MainForm : Form
         latencyButton.LinkColor = palette.Accent;
         latencyButton.ActiveLinkColor = palette.AccentHover;
         latencyButton.VisitedLinkColor = palette.Accent;
+        validationDetails.LinkColor = palette.Accent;
+        validationDetails.ActiveLinkColor = palette.AccentHover;
         conflictLabel.ForeColor = palette.Warning;
         proxySwitch.ApplyTheme(palette);
         testButton.ApplyTheme(palette);
@@ -722,7 +819,7 @@ internal sealed class MainForm : Form
         suppressToggle = false;
         switchHintLabel.Text = proxyMismatch
             ? "开启开关即可应用所选主机。"
-            : "地址切换立即保存，开关控制启用";
+            : (proxySwitch.IsOn ? "关闭后恢复接管前的系统代理设置" : "开启后将所选主机用于系统代理");
         switchHintLabel.ForeColor = proxyMismatch ? palette.Warning : palette.MutedText;
         if (visibilityChanged) LayoutControls();
         statusDot.ForeColor = proxyMismatch ? palette.Warning :
@@ -821,7 +918,7 @@ internal sealed class MainForm : Form
                 TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix);
             textBounds.Width -= latencyWidth + 8;
         }
-        TextRenderer.DrawText(e.Graphics, host.ToString(), hostCombo.Font, textBounds, e.ForeColor,
+        TextRenderer.DrawText(e.Graphics, host.Name + (host.IsBuiltIn ? "（内置）" : ""), hostCombo.Font, textBounds, e.ForeColor,
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix);
         e.DrawFocusRectangle();
     }

@@ -207,7 +207,7 @@ internal sealed class ProxyTakeoverLifecycle
                 {
                     store.Clear();
                     return Result(restored, ProxyTakeoverNoticeKind.Success,
-                        "已恢复接管前的系统代理配置。");
+                        "已恢复原代理设置：" + restored.GetSummary() + "。");
                 }
                 catch (Exception clearError)
                 {

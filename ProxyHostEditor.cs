@@ -7,6 +7,8 @@ internal sealed class ProxyHostEditor : Form
     private readonly DataGridView grid;
     private readonly Label errorLabel;
     private readonly string selectedId;
+    private readonly Label emptyHint;
+    private readonly Button emptyAdd;
     public ProxyHostCatalog Catalog { get; private set; }
 
     public ProxyHostEditor(ProxyHostCatalog catalog, ThemePalette palette)
@@ -63,6 +65,26 @@ internal sealed class ProxyHostEditor : Form
         }
         Controls.Add(grid);
 
+        emptyHint = new Label();
+        emptyHint.Text = "尚未添加自定义主机\r\n添加常用代理后，可在主界面快速切换。";
+        emptyHint.TextAlign = ContentAlignment.MiddleCenter;
+        emptyHint.ForeColor = palette.MutedText;
+        emptyHint.BackColor = palette.Card;
+        emptyHint.AutoSize = false;
+        emptyHint.Size = new Size(420, 52);
+        grid.Controls.Add(emptyHint);
+        emptyAdd = new Button();
+        emptyAdd.Text = "添加主机";
+        emptyAdd.Size = new Size(110, 32);
+        emptyAdd.FlatStyle = FlatStyle.Flat;
+        emptyAdd.FlatAppearance.BorderColor = palette.Border;
+        emptyAdd.BackColor = palette.Card;
+        emptyAdd.ForeColor = palette.Text;
+        grid.Controls.Add(emptyAdd);
+        grid.Resize += delegate { UpdateEmptyState(); };
+        grid.RowsAdded += delegate { UpdateEmptyState(); };
+        grid.RowsRemoved += delegate { UpdateEmptyState(); };
+
         errorLabel = new Label();
         errorLabel.ForeColor = palette.Error;
         errorLabel.SetBounds(16, 272, 568, 36);
@@ -76,6 +98,8 @@ internal sealed class ProxyHostEditor : Form
             grid.CurrentCell = grid.Rows[row].Cells[0];
             grid.BeginEdit(true);
         };
+        emptyAdd.Click += delegate { add.PerformClick(); };
+        UpdateEmptyState();
         Button remove = MakeButton("删除", 104, palette);
         grid.SelectionChanged += delegate
         {
@@ -110,6 +134,16 @@ internal sealed class ProxyHostEditor : Form
         button.ForeColor = palette.Text;
         Controls.Add(button);
         return button;
+    }
+
+    private void UpdateEmptyState()
+    {
+        if (emptyHint == null || emptyAdd == null) return;
+        bool empty = grid.Rows.Count == 0;
+        emptyHint.Visible = empty;
+        emptyAdd.Visible = empty;
+        emptyHint.SetBounds(12, Math.Max(30, (grid.Height - 84) / 2), grid.Width - 24, 52);
+        emptyAdd.Location = new Point((grid.Width - emptyAdd.Width) / 2, emptyHint.Bottom + 4);
     }
 
     private void SaveClick(object sender, EventArgs e)
