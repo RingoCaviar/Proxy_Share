@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Net;
 using System.Text;
-using Microsoft.Win32;
+using System.IO;
 
 internal sealed class ProxyHost
 {
@@ -59,6 +59,7 @@ internal sealed class ProxyHost
 
 internal sealed class ProxyHostCatalog
 {
+    private bool hasCustomHosts;
     public readonly List<ProxyHost> Hosts = new List<ProxyHost>();
     public string SelectedId;
     public ProxyHost Selected
@@ -100,8 +101,6 @@ internal sealed class ProxyHostCatalog
                 throw new FormatException("主机数据格式不正确。");
             if (!ProxyHost.TryCreate(fields[0], Encoding.UTF8.GetString(Convert.FromBase64String(fields[1])),
                 fields[2], fields[3], out host, out error)) throw new FormatException(error);
-            if (host.Id == "yifan" && host.Name == "一帆") host = new ProxyHost(host.Id, "瘦羊羊", host.Endpoint);
-            if (host.Id == "zhaobo" && host.Name == "赵博") host = new ProxyHost(host.Id, "David·博", host.Endpoint);
             catalog.Hosts.Add(host);
         }
         if (catalog.Selected == null) catalog.SelectedId = catalog.Hosts[0].Id;
@@ -110,29 +109,23 @@ internal sealed class ProxyHostCatalog
 
     public static ProxyHostCatalog Load(out string warning)
     {
+        try { return Load(ApplicationDataFiles.HostsPath, out warning); }
+        catch (Exception ex)
+        {
+            warning = "无法定位主机配置文件，暂用内置主机：" + ex.Message;
+            return Defaults();
+        }
+    }
+
+    internal static ProxyHostCatalog Load(string path, out string warning)
+    {
         warning = null;
         try
         {
-            using (RegistryKey key = Registry.CurrentUser.OpenSubKey(@"Software\ProxyShare"))
-            {
-                if (key == null) return Defaults();
-                object saved = key.GetValue("HostsV1");
-                if (saved != null) return Parse(saved as string[]);
-                ProxyHostCatalog catalog = Defaults();
-                // Migrate the previously saved endpoint without losing either built-in host.
-                string address = Convert.ToString(key.GetValue("LastAddress", ""));
-                string port = Convert.ToString(key.GetValue("LastPort", ""));
-                ProxyHost legacy;
-                string error;
-                if (ProxyHost.TryCreate("legacy", "原有代理", address, port, out legacy, out error))
-                {
-                    ProxyHost match = catalog.Hosts.Find(delegate(ProxyHost host) {
-                        return host.Endpoint.GetServerAddress() == legacy.Endpoint.GetServerAddress(); });
-                    if (match == null) catalog.Hosts.Add(legacy);
-                    catalog.SelectedId = match == null ? legacy.Id : match.Id;
-                }
-                return catalog;
-            }
+            if (!File.Exists(path)) return Defaults();
+            ProxyHostCatalog catalog = Parse(File.ReadAllLines(path, Encoding.UTF8));
+            catalog.hasCustomHosts = true;
+            return catalog;
         }
         catch (Exception ex)
         {
@@ -143,8 +136,52 @@ internal sealed class ProxyHostCatalog
 
     public void Save()
     {
-        using (RegistryKey key = Registry.CurrentUser.CreateSubKey(@"Software\ProxyShare"))
-            key.SetValue("HostsV1", Serialize(), RegistryValueKind.MultiString);
+        Save(ApplicationDataFiles.HostsPath);
+    }
+
+    internal void Save(string path)
+    {
+        ApplicationDataFiles.Write(path, Encoding.UTF8.GetBytes(string.Join(Environment.NewLine, Serialize())));
+        hasCustomHosts = true;
+    }
+
+    public void SaveSelection()
+    {
+        if (hasCustomHosts) Save();
+    }
+}
+
+internal static class ApplicationDataFiles
+{
+    public static string DirectoryPath
+    {
+        get
+        {
+            string documents = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+            if (string.IsNullOrEmpty(documents)) throw new IOException("无法定位用户文档目录。");
+            return Path.Combine(documents, "ProxyShare");
+        }
+    }
+
+    public static string HostsPath { get { return Path.Combine(DirectoryPath,
+        "hosts-" + typeof(Program).Module.ModuleVersionId.ToString("N") + ".txt"); } }
+    public static string TakeoverPath { get { return Path.Combine(DirectoryPath, "takeover.bin"); } }
+
+    public static void Write(string path, byte[] data)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path)));
+        string temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            using (FileStream stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                stream.Write(data, 0, data.Length);
+                stream.Flush(true);
+            }
+            if (File.Exists(path)) File.Replace(temporary, path, null);
+            else File.Move(temporary, path);
+        }
+        finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
 }
 

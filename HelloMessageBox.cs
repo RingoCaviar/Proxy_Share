@@ -381,7 +381,7 @@ internal sealed class MainForm : Form
     public MainForm() : this(new ProxyTakeoverLifecycle(), null) { }
 
     internal MainForm(ProxyTakeoverLifecycle lifecycle, ProxyHostCatalog catalog)
-        : this(lifecycle, catalog, delegate(ProxyHostCatalog value) { value.Save(); }) { }
+        : this(lifecycle, catalog, delegate(ProxyHostCatalog value) { value.SaveSelection(); }) { }
 
     internal MainForm(ProxyTakeoverLifecycle lifecycle, ProxyHostCatalog catalog, Action<ProxyHostCatalog> saveCatalog)
     {
@@ -1176,54 +1176,48 @@ internal sealed class ProxyConfiguration
         return string.Join(Environment.NewLine, lines.ToArray());
     }
 
-    public void Save(RegistryKey key, string prefix)
+    public void Save(System.IO.BinaryWriter writer)
     {
-        SaveOptionalDword(key, prefix, "ProxyEnable", proxyEnable);
-        SaveOptionalString(key, prefix, "ProxyServer", proxyServer);
-        SaveOptionalString(key, prefix, "ProxyOverride", proxyOverride);
-        SaveOptionalString(key, prefix, "AutoConfigUrl", autoConfigUrl);
-        SaveOptionalDword(key, prefix, "AutoDetect", autoDetect);
+        WriteOptional(writer, proxyEnable);
+        WriteOptional(writer, proxyServer);
+        WriteOptional(writer, proxyOverride);
+        WriteOptional(writer, autoConfigUrl);
+        WriteOptional(writer, autoDetect);
     }
 
-    private static void SaveOptionalString(RegistryKey key, string prefix, string name,
-        OptionalRegistryValue<string> value)
+    private static void WriteOptional(System.IO.BinaryWriter writer, OptionalRegistryValue<string> value)
     {
-        key.SetValue(prefix + "Has" + name, value.Exists ? 1 : 0, RegistryValueKind.DWord);
-        key.SetValue(prefix + name, value.Value ?? "", RegistryValueKind.String);
+        writer.Write(value.Exists);
+        writer.Write(value.Value != null);
+        if (value.Value != null) writer.Write(value.Value);
     }
 
-    private static void SaveOptionalDword(RegistryKey key, string prefix, string name,
-        OptionalRegistryValue<int> value)
+    private static void WriteOptional(System.IO.BinaryWriter writer, OptionalRegistryValue<int> value)
     {
-        key.SetValue(prefix + "Has" + name, value.Exists ? 1 : 0, RegistryValueKind.DWord);
-        key.SetValue(prefix + name, value.Value, RegistryValueKind.DWord);
+        writer.Write(value.Exists);
+        writer.Write(value.Value);
     }
 
-    public static ProxyConfiguration Load(RegistryKey key, string prefix)
+    public static ProxyConfiguration Load(System.IO.BinaryReader reader)
     {
         ProxyConfiguration value = new ProxyConfiguration();
-        value.proxyEnable = LoadOptionalDword(key, prefix, "ProxyEnable");
-        value.proxyServer = LoadOptionalString(key, prefix, "ProxyServer");
-        value.proxyOverride = LoadOptionalString(key, prefix, "ProxyOverride");
-        value.autoConfigUrl = LoadOptionalString(key, prefix, "AutoConfigUrl");
-        value.autoDetect = LoadOptionalDword(key, prefix, "AutoDetect");
+        value.proxyEnable = ReadOptionalDword(reader);
+        value.proxyServer = ReadOptionalString(reader);
+        value.proxyOverride = ReadOptionalString(reader);
+        value.autoConfigUrl = ReadOptionalString(reader);
+        value.autoDetect = ReadOptionalDword(reader);
         return value;
     }
 
-    private static OptionalRegistryValue<string> LoadOptionalString(RegistryKey key,
-        string prefix, string name)
+    private static OptionalRegistryValue<string> ReadOptionalString(System.IO.BinaryReader reader)
     {
-        bool exists = Convert.ToInt32(key.GetValue(prefix + "Has" + name, 0)) == 1;
-        return new OptionalRegistryValue<string>(exists,
-            Convert.ToString(key.GetValue(prefix + name, "")));
+        bool exists = reader.ReadBoolean();
+        return new OptionalRegistryValue<string>(exists, reader.ReadBoolean() ? reader.ReadString() : null);
     }
 
-    private static OptionalRegistryValue<int> LoadOptionalDword(RegistryKey key,
-        string prefix, string name)
+    private static OptionalRegistryValue<int> ReadOptionalDword(System.IO.BinaryReader reader)
     {
-        bool exists = Convert.ToInt32(key.GetValue(prefix + "Has" + name, 0)) == 1;
-        return new OptionalRegistryValue<int>(exists,
-            Convert.ToInt32(key.GetValue(prefix + name, 0)));
+        return new OptionalRegistryValue<int>(reader.ReadBoolean(), reader.ReadInt32());
     }
 }
 

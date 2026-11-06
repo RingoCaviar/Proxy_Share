@@ -42,6 +42,11 @@ internal static class ProxyTakeoverLifecycleTests
         Run("切换后发生外部修改立即刷新开关", HostSwitchRereadsLatestSystemState);
         Run("切换失败后开关反映实际系统代理", FailedHostSwitchUpdatesToggle);
         Run("切换后系统复读失败不显示开启", HostSwitchReadFailureDoesNotShowOn);
+        Run("主机文件按 EXE 构建隔离并保存用户编辑", HostFilesAreBuildSpecific);
+        Run("损坏的主机文件回退内置数据", CorruptHostFileFallsBack);
+        Run("恢复快照和退出标记通过文件完整保存", TakeoverFileRoundTrip);
+        Run("文件保存失败不会破坏已有数据", FileSaveFailureKeepsExistingData);
+        Run("旧恢复快照转换保留完整配置", LegacyRecoveryConversion);
         Console.WriteLine(failures == 0 ? "全部生命周期测试通过。" : failures + " 个测试失败。");
         return failures == 0 ? 0 : 1;
     }
@@ -55,6 +60,130 @@ internal static class ProxyTakeoverLifecycleTests
         ProxyTakeoverResult restored = lifecycle.DisableOrRestore();
         Equal("old:80", restored.Configuration.ProxyServer);
         False(store.HasTakeover);
+    }
+
+    private static void LegacyRecoveryConversion()
+    {
+        System.Collections.Generic.Dictionary<string, object> fields = new System.Collections.Generic.Dictionary<string, object>();
+        fields["SnapshotHasProxyEnable"] = 1;
+        fields["SnapshotProxyEnable"] = 0;
+        fields["SnapshotHasProxyServer"] = 1;
+        fields["SnapshotProxyServer"] = "old:80";
+        fields["SnapshotHasAutoDetect"] = 1;
+        fields["SnapshotAutoDetect"] = 1;
+        ProxyConfiguration expected = Disabled("old:80");
+        expected.SetAutoDetect(true, 1);
+        ProxyConfiguration loaded = WindowsProxyTakeoverStore.ReadLegacyConfiguration(delegate(string name, object fallback)
+        {
+            object value;
+            return fields.TryGetValue(name, out value) ? value : fallback;
+        }, "Snapshot");
+        Equal(expected, loaded);
+    }
+
+    private static void HostFilesAreBuildSpecific()
+    {
+        WithTemporaryDirectory(delegate(string directory)
+        {
+            string firstBuild = System.IO.Path.Combine(directory, "hosts-build-one.txt");
+            string nextBuild = System.IO.Path.Combine(directory, "hosts-build-two.txt");
+            string warning;
+            ProxyHostCatalog catalog = ProxyHostCatalog.Load(firstBuild, out warning);
+            Equal(null, warning);
+            catalog.SelectedId = "yifan";
+            catalog.SaveSelection();
+            False(System.IO.File.Exists(firstBuild));
+            catalog.Hosts[0] = new ProxyHost("yifan", "用户自定义", new ProxyEndpoint("proxy.local", 8080));
+            catalog.Save(firstBuild);
+            catalog.Save(firstBuild); // Exercise atomic replacement as well as first creation.
+            ProxyHostCatalog loaded = ProxyHostCatalog.Load(firstBuild, out warning);
+            Equal("用户自定义", loaded.Selected.Name);
+            Equal("proxy.local:8080", loaded.Selected.Endpoint.GetServerAddress());
+            ProxyHostCatalog upgraded = ProxyHostCatalog.Load(nextBuild, out warning);
+            Equal("David·博", upgraded.Selected.Name);
+            Equal("瘦羊羊", upgraded.Hosts[0].Name);
+            Equal(true, System.IO.File.Exists(firstBuild));
+            False(System.IO.File.Exists(nextBuild));
+        });
+    }
+
+    private static void CorruptHostFileFallsBack()
+    {
+        WithTemporaryDirectory(delegate(string directory)
+        {
+            string path = System.IO.Path.Combine(directory, "hosts.txt");
+            System.IO.File.WriteAllText(path, "invalid");
+            string warning;
+            ProxyHostCatalog catalog = ProxyHostCatalog.Load(path, out warning);
+            Equal("David·博", catalog.Selected.Name);
+            Equal(true, warning != null);
+            Equal("invalid", System.IO.File.ReadAllText(path));
+        });
+    }
+
+    private static void TakeoverFileRoundTrip()
+    {
+        WithTemporaryDirectory(delegate(string directory)
+        {
+            string path = System.IO.Path.Combine(directory, "takeover.bin");
+            WindowsProxyTakeoverStore store = new WindowsProxyTakeoverStore(path);
+            ProxyConfiguration snapshot = new ProxyConfiguration();
+            snapshot.SetAutoDetect(true, 0);
+            ProxyConfiguration managed = snapshot.Clone();
+            managed.UseManualProxy("proxy.local:7890", "<local>");
+            store.Save(snapshot, managed);
+            ProxyConfiguration loadedSnapshot;
+            ProxyConfiguration loadedManaged;
+            bool clean;
+            Equal(true, new WindowsProxyTakeoverStore(path).TryLoad(out loadedSnapshot, out loadedManaged, out clean));
+            Equal(snapshot, loadedSnapshot);
+            Equal(managed, loadedManaged);
+            False(clean);
+            store.MarkCleanExit(true);
+            Equal(true, store.TryLoad(out loadedSnapshot, out loadedManaged, out clean));
+            Equal(true, clean);
+            Equal(snapshot, loadedSnapshot);
+            store.MarkCleanExit(false);
+            store.TryLoad(out loadedSnapshot, out loadedManaged, out clean);
+            False(clean);
+            store.Clear();
+            False(store.TryLoad(out loadedSnapshot, out loadedManaged, out clean));
+            store.MarkCleanExit(true);
+            False(System.IO.File.Exists(path));
+        });
+    }
+
+    private static void FileSaveFailureKeepsExistingData()
+    {
+        WithTemporaryDirectory(delegate(string directory)
+        {
+            string path = System.IO.Path.Combine(directory, "hosts.txt");
+            ProxyHostCatalog catalog = ProxyHostCatalog.Defaults();
+            catalog.Save(path);
+            string original = System.IO.File.ReadAllText(path);
+            using (System.IO.FileStream locked = new System.IO.FileStream(path, System.IO.FileMode.Open,
+                System.IO.FileAccess.Read, System.IO.FileShare.None))
+            {
+                bool failed = false;
+                try { catalog.Save(path); }
+                catch (System.IO.IOException) { failed = true; }
+                Equal(true, failed);
+            }
+            Equal(original, System.IO.File.ReadAllText(path));
+            Equal(1, System.IO.Directory.GetFiles(directory).Length);
+        });
+    }
+
+    private static void WithTemporaryDirectory(Action<string> action)
+    {
+        string directory = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ProxyShareTests_" + Guid.NewGuid().ToString("N"));
+        System.IO.Directory.CreateDirectory(directory);
+        try { action(directory); }
+        finally
+        {
+            foreach (string path in System.IO.Directory.GetFiles(directory)) System.IO.File.Delete(path);
+            System.IO.Directory.Delete(directory);
+        }
     }
 
     private static void HostSwitchUpdatesToggleImmediately()

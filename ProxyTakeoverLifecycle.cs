@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Net;
 using System.Runtime.InteropServices;
-using Microsoft.Win32;
+using System.IO;
 
 internal enum ProxyTakeoverNoticeKind { None, Success, Warning, Error }
 internal enum ProxyTakeoverState { Unmanaged, Managed, RecoveryAvailable }
@@ -405,7 +405,12 @@ internal sealed class ProxyTakeoverLifecycle
 
 internal sealed class WindowsProxyTakeoverStore : IProxyTakeoverStore
 {
-    private const string Path = @"Software\ProxyShare";
+    private readonly string statePath;
+    private readonly bool importLegacy;
+    private bool legacyChecked;
+    private string StatePath { get { return statePath ?? ApplicationDataFiles.TakeoverPath; } }
+    public WindowsProxyTakeoverStore() : this(null) { importLegacy = true; }
+    internal WindowsProxyTakeoverStore(string path) { statePath = path; }
     public ProxyConfiguration ReadCurrent() { return ProxyConfiguration.Read(); }
     public void WriteCurrent(ProxyConfiguration configuration) { configuration.Write(); }
     public void NotifyChanged()
@@ -420,42 +425,92 @@ internal sealed class WindowsProxyTakeoverStore : IProxyTakeoverStore
         snapshot = null;
         managed = null;
         cleanExit = true;
-        using (RegistryKey key = Registry.CurrentUser.OpenSubKey(Path))
+        if (!File.Exists(StatePath) && importLegacy && !legacyChecked) ImportLegacyRecovery();
+        if (!File.Exists(StatePath)) return false;
+        using (BinaryReader reader = new BinaryReader(File.OpenRead(StatePath)))
         {
-            if (key == null || Convert.ToInt32(key.GetValue("HasTakeover", 0)) != 1) return false;
-            snapshot = ProxyConfiguration.Load(key, "Snapshot");
-            managed = ProxyConfiguration.Load(key, "Managed");
-            cleanExit = Convert.ToInt32(key.GetValue("CleanExit", 1)) == 1;
+            if (reader.ReadString() != "ProxyShare.Takeover.1") throw new IOException("代理恢复文件格式不正确。");
+            cleanExit = reader.ReadBoolean();
+            snapshot = ProxyConfiguration.Load(reader);
+            managed = ProxyConfiguration.Load(reader);
+            if (reader.BaseStream.Position != reader.BaseStream.Length) throw new IOException("代理恢复文件存在多余数据。");
             return true;
         }
     }
     public void Save(ProxyConfiguration snapshot, ProxyConfiguration managed)
     {
-        using (RegistryKey key = Registry.CurrentUser.CreateSubKey(Path))
+        Save(snapshot, managed, false);
+    }
+
+    private void Save(ProxyConfiguration snapshot, ProxyConfiguration managed, bool clean)
+    {
+        using (MemoryStream stream = new MemoryStream())
+        using (BinaryWriter writer = new BinaryWriter(stream))
         {
-            snapshot.Save(key, "Snapshot");
-            managed.Save(key, "Managed");
-            key.SetValue("CleanExit", 0, RegistryValueKind.DWord);
-            key.SetValue("HasTakeover", 1, RegistryValueKind.DWord);
+            writer.Write("ProxyShare.Takeover.1");
+            writer.Write(clean);
+            snapshot.Save(writer);
+            managed.Save(writer);
+            writer.Flush();
+            ApplicationDataFiles.Write(StatePath, stream.ToArray());
         }
     }
 
     public void Clear()
     {
-        using (RegistryKey key = Registry.CurrentUser.CreateSubKey(Path))
-        {
-            key.SetValue("HasTakeover", 0, RegistryValueKind.DWord);
-            key.SetValue("CleanExit", 1, RegistryValueKind.DWord);
-        }
+        File.Delete(StatePath);
     }
 
     public void MarkCleanExit(bool clean)
     {
-        using (RegistryKey key = Registry.CurrentUser.OpenSubKey(Path, true))
+        ProxyConfiguration snapshot;
+        ProxyConfiguration managed;
+        bool previousClean;
+        if (TryLoad(out snapshot, out managed, out previousClean)) Save(snapshot, managed, clean);
+    }
+
+    // Import only recovery metadata, never the old host list or last selected endpoint.
+    private void ImportLegacyRecovery()
+    {
+        string marker = StatePath + ".legacy-imported";
+        if (File.Exists(marker)) { legacyChecked = true; return; }
+        using (Microsoft.Win32.RegistryKey key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\ProxyShare"))
         {
             if (key != null && Convert.ToInt32(key.GetValue("HasTakeover", 0)) == 1)
-                key.SetValue("CleanExit", clean ? 1 : 0, RegistryValueKind.DWord);
+            {
+                Func<string, object, object> read = delegate(string name, object fallback) { return key.GetValue(name, fallback); };
+                Save(ReadLegacyConfiguration(read, "Snapshot"), ReadLegacyConfiguration(read, "Managed"),
+                    Convert.ToInt32(key.GetValue("CleanExit", 1)) == 1);
+                ApplicationDataFiles.Write(marker, new byte[] { 1 });
+            }
         }
+        legacyChecked = true;
+    }
+
+    internal static ProxyConfiguration ReadLegacyConfiguration(Func<string, object, object> read, string prefix)
+    {
+        using (MemoryStream stream = new MemoryStream())
+        using (BinaryWriter writer = new BinaryWriter(stream))
+        {
+            WriteLegacyDword(writer, read, prefix, "ProxyEnable");
+            foreach (string name in new string[] { "ProxyServer", "ProxyOverride", "AutoConfigUrl" })
+            {
+                bool exists = Convert.ToInt32(read(prefix + "Has" + name, 0)) == 1;
+                writer.Write(exists);
+                writer.Write(exists);
+                if (exists) writer.Write(Convert.ToString(read(prefix + name, "")));
+            }
+            WriteLegacyDword(writer, read, prefix, "AutoDetect");
+            writer.Flush();
+            stream.Position = 0;
+            using (BinaryReader reader = new BinaryReader(stream)) return ProxyConfiguration.Load(reader);
+        }
+    }
+
+    private static void WriteLegacyDword(BinaryWriter writer, Func<string, object, object> read, string prefix, string name)
+    {
+        writer.Write(Convert.ToInt32(read(prefix + "Has" + name, 0)) == 1);
+        writer.Write(Convert.ToInt32(read(prefix + name, 0)));
     }
 
     [DllImport("wininet.dll", SetLastError = true)]
