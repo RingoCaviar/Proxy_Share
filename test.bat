@@ -10,7 +10,7 @@ set "TEST_OUT=%TEMP%\ProxyTakeoverLifecycleTests.exe"
     /reference:"%FRAMEWORK%\System.dll" ^
     /reference:"%FRAMEWORK%\System.Drawing.dll" ^
     /reference:"%FRAMEWORK%\System.Windows.Forms.dll" ^
-    "HelloMessageBox.cs" "ProxyTakeoverLifecycle.cs" "ProxyTakeoverLifecycleTests.cs"
+    "HelloMessageBox.cs" "ProxyTakeoverLifecycle.cs" "ProxyHosts.cs" "ProxyHostEditor.cs" "ProxyTakeoverLifecycleTests.cs"
 
 if errorlevel 1 exit /b 1
 "%TEST_OUT%"

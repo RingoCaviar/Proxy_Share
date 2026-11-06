@@ -85,6 +85,17 @@ internal sealed class ProxyTakeoverLifecycle
 
     public ProxyTakeoverResult Enable(ProxyEndpoint endpoint)
     {
+        return ApplyEndpoint(endpoint, true);
+    }
+
+    // Selecting a host changes the address immediately without turning an off proxy on.
+    public ProxyTakeoverResult SelectEndpoint(ProxyEndpoint endpoint)
+    {
+        return ApplyEndpoint(endpoint, false);
+    }
+
+    private ProxyTakeoverResult ApplyEndpoint(ProxyEndpoint endpoint, bool enable)
+    {
         ProxyConfiguration original;
         ProxyTakeoverResult readFailure;
         if (!TryReadCurrent(out original, out readFailure)) return readFailure;
@@ -118,8 +129,11 @@ internal sealed class ProxyTakeoverLifecycle
             }
         }
         ProxyConfiguration desired = original.Clone();
-        desired.UseManualProxy(endpoint.GetServerAddress(),
-            MergeBypass(original.GetProxyOverrideOrNull()));
+        if (enable || original.ProxyEnabled)
+            desired.UseManualProxy(endpoint.GetServerAddress(),
+                MergeBypass(original.GetProxyOverrideOrNull()));
+        else
+            desired.SetProxyServer(endpoint.GetServerAddress());
         try
         {
             store.Save(snapshot, desired);

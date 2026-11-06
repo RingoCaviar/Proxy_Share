@@ -34,6 +34,8 @@ if not defined APP_VERSION (
     /reference:"%FRAMEWORK%\System.Windows.Forms.dll" ^
     "%SRC%" ^
     "ProxyTakeoverLifecycle.cs" ^
+    "ProxyHosts.cs" ^
+    "ProxyHostEditor.cs" ^
     "%VERSION_SOURCE%"
 
 if errorlevel 1 (

@@ -25,6 +25,16 @@ internal static class ProxyTakeoverLifecycleTests
         Run("恢复失败后仍保持接管状态", FailedRestoreRemainsManaged);
         Run("未接管时退出记录失败仍保持未接管", UnmanagedCleanExitFailureStaysUnmanaged);
         Run("系统代理端点可与软件配置比较", ProxyEndpointComparison);
+        Run("关闭时切换主机仅更新端点", SelectWhileDisabled);
+        Run("开启时切换主机并恢复最初配置", SelectWhileEnabled);
+        Run("选择主机失败保留原接管状态", FailedSelectionKeepsSnapshot);
+        Run("关闭时选择主机刷新失败会回滚", FailedDisabledSelectionRollsBack);
+        Run("主机列表编辑和删除后持久化", HostCatalogRoundTrip);
+        Run("删除所选主机后选择剩余主机", DeletedSelectionFallsBack);
+        Run("损坏的主机列表不会被部分读取", InvalidHostCatalogRejected);
+        Run("非法主机端点被拒绝", InvalidHostRejected);
+        Run("识别其他代理进程名称", OtherProxyProcessesRecognized);
+        Run("TCP 延迟测试连接实际代理端口", TcpProbeUsesPort);
         Console.WriteLine(failures == 0 ? "全部生命周期测试通过。" : failures + " 个测试失败。");
         return failures == 0 ? 0 : 1;
     }
@@ -38,6 +48,129 @@ internal static class ProxyTakeoverLifecycleTests
         ProxyTakeoverResult restored = lifecycle.DisableOrRestore();
         Equal("old:80", restored.Configuration.ProxyServer);
         False(store.HasTakeover);
+    }
+
+    private static void SelectWhileDisabled()
+    {
+        ProxyConfiguration original = Disabled("old:80");
+        original.SetAutoDetect(true, 1);
+        FakeProxyTakeoverStore store = new FakeProxyTakeoverStore(original);
+        ProxyTakeoverLifecycle lifecycle = new ProxyTakeoverLifecycle(store);
+        ProxyTakeoverResult selected = lifecycle.SelectEndpoint(new ProxyEndpoint("192.168.1.72", 7897));
+        Equal(ProxyTakeoverNoticeKind.None, selected.NoticeKind);
+        Equal("192.168.1.72:7897", store.Current.ProxyServer);
+        False(store.Current.ProxyEnabled);
+        ProxyConfiguration expected = original.Clone();
+        expected.SetProxyServer("192.168.1.72:7897");
+        Equal(expected, store.Current);
+        lifecycle.Enable(new ProxyEndpoint("192.168.1.4", 7892));
+        Equal(original, lifecycle.DisableOrRestore().Configuration);
+    }
+
+    private static void SelectWhileEnabled()
+    {
+        ProxyConfiguration original = Disabled("old:80");
+        FakeProxyTakeoverStore store = new FakeProxyTakeoverStore(original);
+        ProxyTakeoverLifecycle lifecycle = new ProxyTakeoverLifecycle(store);
+        lifecycle.Enable(new ProxyEndpoint("192.168.1.4", 7892));
+        ProxyTakeoverResult result = lifecycle.SelectEndpoint(new ProxyEndpoint("192.168.1.72", 7897));
+        Equal(ProxyTakeoverNoticeKind.None, result.NoticeKind);
+        Equal(true, result.Configuration.UsesEndpoint(new ProxyEndpoint("192.168.1.72", 7897)));
+        False(result.Configuration.UsesEndpoint(new ProxyEndpoint("192.168.1.4", 7892)));
+        Equal(original, lifecycle.DisableOrRestore().Configuration);
+    }
+
+    private static void FailedSelectionKeepsSnapshot()
+    {
+        ProxyConfiguration original = Disabled("old:80");
+        FakeProxyTakeoverStore store = new FakeProxyTakeoverStore(original);
+        ProxyTakeoverLifecycle lifecycle = new ProxyTakeoverLifecycle(store);
+        lifecycle.Enable(new ProxyEndpoint("192.168.1.4", 7892));
+        store.FailNextNotify = true;
+        ProxyTakeoverResult result = lifecycle.SelectEndpoint(new ProxyEndpoint("192.168.1.72", 7897));
+        Equal(ProxyTakeoverNoticeKind.Error, result.NoticeKind);
+        Equal(true, store.Current.UsesEndpoint(new ProxyEndpoint("192.168.1.4", 7892)));
+        Equal(original, lifecycle.DisableOrRestore().Configuration);
+    }
+
+    private static void FailedDisabledSelectionRollsBack()
+    {
+        ProxyConfiguration original = Disabled("old:80");
+        FakeProxyTakeoverStore store = new FakeProxyTakeoverStore(original);
+        store.FailNextNotify = true;
+        ProxyTakeoverResult result = new ProxyTakeoverLifecycle(store).SelectEndpoint(new ProxyEndpoint("192.168.1.72", 7897));
+        Equal(ProxyTakeoverNoticeKind.Error, result.NoticeKind);
+        Equal(original, store.Current);
+        False(store.HasTakeover);
+    }
+
+    private static void HostCatalogRoundTrip()
+    {
+        ProxyHostCatalog catalog = ProxyHostCatalog.Defaults();
+        Equal("一帆", catalog.Hosts[0].Name);
+        Equal("192.168.1.72:7897", catalog.Hosts[0].Endpoint.GetServerAddress());
+        Equal("赵博", catalog.Hosts[1].Name);
+        Equal("192.168.1.4:7892", catalog.Hosts[1].Endpoint.GetServerAddress());
+        ProxyHost edited;
+        string error;
+        Equal(true, ProxyHost.TryCreate(catalog.SelectedId, "赵博 | 办公室", "proxy.local", "8080", out edited, out error));
+        catalog.Hosts[1] = edited;
+        catalog.Hosts.RemoveAt(0);
+        ProxyHostCatalog loaded = ProxyHostCatalog.Parse(catalog.Serialize());
+        Equal(1, loaded.Hosts.Count);
+        Equal("赵博 | 办公室", loaded.Selected.Name);
+        Equal("proxy.local:8080", loaded.Selected.Endpoint.GetServerAddress());
+    }
+
+    private static void DeletedSelectionFallsBack()
+    {
+        ProxyHostCatalog catalog = ProxyHostCatalog.Defaults();
+        catalog.Hosts.RemoveAt(1);
+        ProxyHostCatalog loaded = ProxyHostCatalog.Parse(catalog.Serialize());
+        Equal("一帆", loaded.Selected.Name);
+    }
+
+    private static void InvalidHostCatalogRejected()
+    {
+        try { ProxyHostCatalog.Parse(new string[] { "x", "invalid-data" }); }
+        catch (FormatException) { return; }
+        throw new Exception("损坏配置应被拒绝");
+    }
+
+    private static void InvalidHostRejected()
+    {
+        ProxyHost host;
+        string error;
+        False(ProxyHost.TryCreate("x", "", "127.0.0.1", "7890", out host, out error));
+        False(ProxyHost.TryCreate("x", "主机", "http://127.0.0.1", "7890", out host, out error));
+        False(ProxyHost.TryCreate("x", "主机", "127.0.0.1", "65536", out host, out error));
+        False(ProxyHost.TryCreate("x", "主机", "127.0.0.1", "0", out host, out error));
+        False(ProxyHost.TryCreate("x", "主机", "host:7890", "7890", out host, out error));
+        Equal(true, ProxyHost.TryCreate("x", "IPv6", "::1", "7890", out host, out error));
+        Equal("[::1]:7890", host.Endpoint.GetServerAddress());
+        Equal(true, ProxyHost.TryCreate("x", "IPv6", "[::1]", "7890", out host, out error));
+        Equal("[::1]:7890", host.Endpoint.GetServerAddress());
+    }
+
+    private static void OtherProxyProcessesRecognized()
+    {
+        foreach (string name in new string[] { "clash-verge", "Clash Verge Service", "clash_party", "FlClash", "mihomo", "verge-mihomo-alpha" })
+            Equal(true, OtherProxyDetector.IsProxyProcess(name));
+        False(OtherProxyDetector.IsProxyProcess("ProxyShare"));
+        False(OtherProxyDetector.IsProxyProcess("explorer"));
+    }
+
+    private static void TcpProbeUsesPort()
+    {
+        System.Net.Sockets.TcpListener listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        listener.Start();
+        int port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+        try { Equal(true, ProxyHostProbe.Measure(new ProxyEndpoint("127.0.0.1", port), 1000) >= 1); }
+        finally { listener.Stop(); }
+        try { ProxyHostProbe.Measure(new ProxyEndpoint("127.0.0.1", port), 1000); }
+        catch (System.Net.Sockets.SocketException) { return; }
+        catch (TimeoutException) { return; }
+        throw new Exception("关闭的代理端口不应被判为可达");
     }
 
     private static void ExternalChangeInvalidatesSnapshot()

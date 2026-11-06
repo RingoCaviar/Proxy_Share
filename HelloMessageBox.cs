@@ -4,7 +4,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Net;
-using System.Net.NetworkInformation;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
@@ -334,7 +334,6 @@ internal sealed class AccentButton : Button
 
 internal sealed class MainForm : Form
 {
-    private const string ApplicationSettingsPath = @"Software\ProxyShare";
     private const string ThemePath = @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
 
     private readonly Label titleLabel;
@@ -347,8 +346,19 @@ internal sealed class MainForm : Form
     private readonly CardPanel card;
     private readonly Label addressLabel;
     private readonly Label portLabel;
-    private readonly ThemedTextBox addressBox;
-    private readonly ThemedTextBox portBox;
+    private readonly Label addressPreview;
+    private readonly Label portPreview;
+    private readonly ComboBox hostCombo;
+    private readonly AccentButton editHostsButton;
+    private readonly LinkLabel latencyButton;
+    private readonly Label conflictLabel;
+    private readonly BackgroundWorker latencyWorker;
+    private readonly BackgroundWorker processWorker;
+    private readonly Timer statusTimer;
+    private readonly System.Collections.Generic.Dictionary<string, string> latencies = new System.Collections.Generic.Dictionary<string, string>();
+    private ProxyHostCatalog hostCatalog;
+    private ProxyEndpoint testedEndpoint;
+    private bool suppressSelection;
     private readonly Label validationLabel;
     private readonly Label switchTitleLabel;
     private readonly Label switchHintLabel;
@@ -367,12 +377,14 @@ internal sealed class MainForm : Form
     private bool activatedOnce;
     private ProxyConfiguration currentConfiguration;
 
-    public MainForm()
+    public MainForm() : this(new ProxyTakeoverLifecycle(), null) { }
+
+    internal MainForm(ProxyTakeoverLifecycle lifecycle, ProxyHostCatalog catalog)
     {
         Text = "局域网代理共享";
-        ClientSize = new Size(380, 410);
-        MinimumSize = new Size(356, 450);
-        MaximumSize = new Size(536, 529);
+        ClientSize = new Size(420, 470);
+        MinimumSize = new Size(396, 509);
+        MaximumSize = new Size(636, 649);
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.Sizable;
         AutoScaleMode = AutoScaleMode.Dpi;
@@ -395,19 +407,38 @@ internal sealed class MainForm : Form
         card = new CardPanel();
         addressLabel = MakeLabel("代理地址", 9F, FontStyle.Regular);
         portLabel = MakeLabel("端口", 9F, FontStyle.Regular);
-        addressBox = new ThemedTextBox();
-        addressBox.Text = "192.168.1.72";
-        portBox = new ThemedTextBox();
-        portBox.Text = "7897";
+        addressPreview = MakeLabel("", 10F, FontStyle.Bold);
+        portPreview = MakeLabel("", 10F, FontStyle.Bold);
+        addressPreview.AutoEllipsis = true;
+        hostCombo = new ComboBox();
+        hostCombo.DropDownStyle = ComboBoxStyle.DropDownList;
+        hostCombo.DrawMode = DrawMode.OwnerDrawFixed;
+        hostCombo.ItemHeight = 28;
+        hostCombo.DropDownWidth = 460;
+        hostCombo.AccessibleName = "代理主机";
+        hostCombo.DrawItem += DrawHostItem;
+        hostCombo.SelectedIndexChanged += HostSelectionChanged;
+        editHostsButton = new AccentButton();
+        editHostsButton.Text = "编辑";
+        editHostsButton.Click += EditHostsClick;
+        latencyButton = new LinkLabel();
+        latencyButton.Text = "测试所有延迟";
+        latencyButton.BackColor = Color.Transparent;
+        latencyButton.AutoSize = false;
+        latencyButton.TextAlign = ContentAlignment.MiddleRight;
+        latencyButton.LinkClicked += delegate { StartLatencyTest(); };
+        conflictLabel = MakeLabel("检测到您当前正在运行其他代理软件，请关闭其他代理软件后再使用。", 9F, FontStyle.Regular);
+        conflictLabel.Visible = false;
         validationLabel = MakeLabel("", 8.5F, FontStyle.Regular);
 
         switchTitleLabel = MakeLabel("系统代理", 10F, FontStyle.Bold);
         switchHintLabel = MakeLabel("拨动开关立即应用当前配置", 8.5F, FontStyle.Regular);
         proxySwitch = new ToggleSwitch();
+        proxySwitch.AccessibleName = "启用所选主机的系统代理";
         proxySwitch.ToggleChanged += ProxySwitchChanged;
         mismatchPanel = new Panel();
         mismatchPanel.Visible = false;
-        mismatchTitleLabel = MakeLabel("⚠ 当前填写的代理未生效", 9F, FontStyle.Bold);
+        mismatchTitleLabel = MakeLabel("所选主机尚未生效", 9F, FontStyle.Bold);
         mismatchDetailLabel = MakeLabel("", 8.5F, FontStyle.Regular);
         mismatchConfiguredLabel = MakeLabel("", 8.5F, FontStyle.Regular);
         mismatchDetailLabel.AutoEllipsis = true;
@@ -432,8 +463,11 @@ internal sealed class MainForm : Form
         Controls.Add(card);
         card.Controls.Add(addressLabel);
         card.Controls.Add(portLabel);
-        card.Controls.Add(addressBox);
-        card.Controls.Add(portBox);
+        card.Controls.Add(addressPreview);
+        card.Controls.Add(portPreview);
+        card.Controls.Add(hostCombo);
+        card.Controls.Add(editHostsButton);
+        card.Controls.Add(latencyButton);
         card.Controls.Add(validationLabel);
         Controls.Add(switchTitleLabel);
         Controls.Add(switchHintLabel);
@@ -441,18 +475,35 @@ internal sealed class MainForm : Form
         Controls.Add(mismatchPanel);
         Controls.Add(testButton);
         Controls.Add(resultLabel);
+        Controls.Add(conflictLabel);
 
         testWorker = new BackgroundWorker();
         testWorker.DoWork += TestWorkerDoWork;
         testWorker.RunWorkerCompleted += TestWorkerCompleted;
-        proxyLifecycle = new ProxyTakeoverLifecycle();
-        addressBox.TextChanged += delegate { UpdateProxyMismatch(); };
-        portBox.TextChanged += delegate { UpdateProxyMismatch(); };
+        proxyLifecycle = lifecycle;
+        hostCatalog = catalog;
+        if (hostCatalog != null) PopulateHosts();
+        latencyWorker = new BackgroundWorker();
+        latencyWorker.DoWork += LatencyWorkerDoWork;
+        latencyWorker.RunWorkerCompleted += LatencyWorkerCompleted;
+        processWorker = new BackgroundWorker();
+        processWorker.DoWork += delegate(object sender, DoWorkEventArgs e) { e.Result = OtherProxyDetector.FindRunning(); };
+        processWorker.RunWorkerCompleted += delegate(object sender, RunWorkerCompletedEventArgs e)
+        {
+            if (IsDisposed || e.Error != null) return;
+            string[] names = e.Result as string[];
+            conflictLabel.Visible = names != null && names.Length > 0;
+            if (conflictLabel.Visible) currentProxyToolTip.SetToolTip(conflictLabel, string.Join("、", names));
+            LayoutControls();
+        };
+        statusTimer = new Timer();
+        statusTimer.Interval = 1000;
+        statusTimer.Tick += delegate { if (Visible && !suppressSelection) RefreshProxyStatus(); };
 
         lightTheme = IsSystemLightTheme();
         ApplyTheme();
         LayoutControls();
-        Shown += delegate { InitializeProxyState(); };
+        Shown += delegate { InitializeProxyState(); processWorker.RunWorkerAsync(); statusTimer.Start(); };
         Activated += delegate
         {
             bool currentTheme = IsSystemLightTheme();
@@ -490,12 +541,13 @@ internal sealed class MainForm : Form
 
     private void LayoutControls()
     {
-        if (titleLabel == null) return;
+        if (resultLabel == null || conflictLabel == null) return;
         int contentWidth = ClientSize.Width - 40;
         int left = 20;
         bool showMismatch = mismatchPanel != null && mismatchPanel.Visible;
-        int cardY = showMismatch ? 128 : 108;
-        int switchY = cardY + 132;
+        int conflictHeight = conflictLabel.Visible ? 52 : 0;
+        int cardY = 108 + conflictHeight;
+        int switchY = cardY + 178 + (showMismatch ? 62 : 0);
 
         titleLabel.SetBounds(left, 18, contentWidth - 100, 30);
         subtitleLabel.SetBounds(left, 52, contentWidth, 20);
@@ -504,27 +556,33 @@ internal sealed class MainForm : Form
         currentProxyCaptionLabel.SetBounds(left, 77, 92, 19);
         currentProxyLabel.SetBounds(left + 96, 77, contentWidth - 96, 19);
 
-        mismatchPanel.SetBounds(left, 56, contentWidth, 60);
+        conflictLabel.SetBounds(left, 103, contentWidth, 46);
+        mismatchPanel.SetBounds(left, cardY + 174, contentWidth, 58);
         mismatchTitleLabel.SetBounds(12, 2, contentWidth - 24, 18);
         mismatchDetailLabel.SetBounds(12, 20, contentWidth - 24, 18);
         mismatchConfiguredLabel.SetBounds(12, 39, contentWidth - 24, 18);
 
-        card.SetBounds(left, cardY, contentWidth, 112);
+        card.SetBounds(left, cardY, contentWidth, 166);
         int innerWidth = card.Width - 32;
         int portWidth = Math.Min(94, Math.Max(76, innerWidth / 3));
         int gap = 12;
         int addressWidth = innerWidth - portWidth - gap;
-        addressLabel.SetBounds(16, 13, addressWidth, 19);
-        portLabel.SetBounds(16 + addressWidth + gap, 13, portWidth, 19);
-        addressBox.SetBounds(16, 35, addressWidth, 34);
-        portBox.SetBounds(16 + addressWidth + gap, 35, portWidth, 34);
-        validationLabel.SetBounds(16, 78, innerWidth, 27);
+        hostCombo.SetBounds(16, 14, innerWidth - 70, 34);
+        editHostsButton.SetBounds(card.Width - 76, 14, 60, 32);
+        addressLabel.SetBounds(16, 57, addressWidth, 19);
+        portLabel.SetBounds(16 + addressWidth + gap, 57, portWidth, 19);
+        addressPreview.SetBounds(16, 79, addressWidth, 24);
+        portPreview.SetBounds(16 + addressWidth + gap, 79, portWidth, 24);
+        latencyButton.SetBounds(card.Width - 140, 110, 124, 26);
+        validationLabel.SetBounds(16, 137, innerWidth, 27);
 
         switchTitleLabel.SetBounds(left, switchY, contentWidth - 70, 21);
         switchHintLabel.SetBounds(left, switchY + 23, contentWidth - 60, 36);
         proxySwitch.Location = new Point(ClientSize.Width - 64, switchY + 5);
 
-        int buttonY = Math.Max(ClientSize.Height - (showMismatch ? 74 : 80),
+        int requiredHeight = switchHintLabel.Bottom + 94;
+        if (ClientSize.Height < requiredHeight) ClientSize = new Size(ClientSize.Width, requiredHeight);
+        int buttonY = Math.Max(ClientSize.Height - 76,
             switchHintLabel.Bottom + 17);
         testButton.SetBounds(left, buttonY, contentWidth, 38);
         resultLabel.SetBounds(left, buttonY + 42, contentWidth, 23);
@@ -551,11 +609,18 @@ internal sealed class MainForm : Form
         mismatchConfiguredLabel.ForeColor = palette.Text;
         resultLabel.ForeColor = palette.MutedText;
         card.ApplyTheme(palette);
-        addressBox.ApplyTheme(palette);
-        portBox.ApplyTheme(palette);
+        addressPreview.ForeColor = palette.Text;
+        portPreview.ForeColor = palette.Text;
+        hostCombo.BackColor = palette.Input;
+        hostCombo.ForeColor = palette.Text;
+        editHostsButton.ApplyTheme(palette);
+        latencyButton.LinkColor = palette.Accent;
+        latencyButton.ActiveLinkColor = palette.AccentHover;
+        latencyButton.VisitedLinkColor = palette.Accent;
+        conflictLabel.ForeColor = palette.Warning;
         proxySwitch.ApplyTheme(palette);
         testButton.ApplyTheme(palette);
-        RefreshProxyStatus();
+        if (hostCatalog != null) RefreshProxyStatus();
         Invalidate(true);
     }
 
@@ -574,9 +639,12 @@ internal sealed class MainForm : Form
 
     private void InitializeProxyState()
     {
-        LoadLastEndpoint();
+        string warning = null;
+        if (hostCatalog == null) hostCatalog = ProxyHostCatalog.Load(out warning);
+        PopulateHosts();
         ProxyTakeoverResult result = proxyLifecycle.Initialize();
         ApplyTakeoverResult(result);
+        if (warning != null) { validationLabel.Text = warning; validationLabel.ForeColor = palette.Warning; }
         if (result.State == ProxyTakeoverState.RecoveryAvailable)
         {
             DialogResult choice = MessageBox.Show(this,
@@ -602,11 +670,13 @@ internal sealed class MainForm : Form
         if (current != null)
         {
             suppressToggle = true;
-            proxySwitch.SetState(current.ProxyEnabled, false);
+            proxySwitch.SetState(hostCatalog != null && current.UsesEndpoint(hostCatalog.Selected.Endpoint), false);
             suppressToggle = false;
+            currentProxyToolTip.SetToolTip(statusLabel, current.GetDetails());
             currentProxyLabel.Text = current.GetSummary();
             currentProxyToolTip.SetToolTip(currentProxyLabel, current.GetDetails());
         }
+        else currentProxyLabel.Text = "无法读取系统设置";
         UpdateProxyMismatch();
         if (result.NoticeKind == ProxyTakeoverNoticeKind.Error && result.Message != null)
         {
@@ -636,17 +706,18 @@ internal sealed class MainForm : Form
         {
             mismatchDetailLabel.Text = "系统当前代理：" + currentConfiguration.GetSummary();
             mismatchConfiguredLabel.Text = validEndpoint
-                ? "界面填写代理：" + new ProxyEndpoint(address, port).GetServerAddress()
-                : "界面填写代理：地址或端口无效";
+                ? "所选主机代理：" + new ProxyEndpoint(address, port).GetServerAddress()
+                : "尚未选择主机";
             currentProxyToolTip.SetToolTip(mismatchDetailLabel, mismatchDetailLabel.Text);
             currentProxyToolTip.SetToolTip(mismatchConfiguredLabel, mismatchConfiguredLabel.Text);
         }
-        subtitleLabel.Visible = !proxyMismatch;
-        currentProxyCaptionLabel.Visible = !proxyMismatch;
-        currentProxyLabel.Visible = !proxyMismatch;
+        suppressToggle = true;
+        proxySwitch.SetState(currentConfiguration != null && validEndpoint &&
+            currentConfiguration.UsesEndpoint(new ProxyEndpoint(address, port)), false);
+        suppressToggle = false;
         switchHintLabel.Text = proxyMismatch
-            ? "关闭后重新开启开关，以应用填写的代理。"
-            : "拨动开关立即应用当前配置";
+            ? "开启开关即可应用所选主机。"
+            : "地址切换立即保存，开关控制启用";
         switchHintLabel.ForeColor = proxyMismatch ? palette.Warning : palette.MutedText;
         if (visibilityChanged) LayoutControls();
         statusDot.ForeColor = proxyMismatch ? palette.Warning :
@@ -659,35 +730,126 @@ internal sealed class MainForm : Form
 
     private bool TryGetEndpoint(out string address, out int port, out string error)
     {
-        address = addressBox.Text.Trim();
-        port = 0;
-        error = null;
-        if (address.Length == 0)
-            error = "请输入代理地址。";
-        else if (!IsValidProxyHost(address))
-            error = "请输入合法的 IP 地址或主机名（不要包含协议或路径）。";
-        else if (!int.TryParse(portBox.Text.Trim(), out port))
-            error = "端口必须是数字。";
-        else if (port < 1 || port > 65535)
-            error = "端口范围应为 1–65535。";
+        ProxyHost host = hostCatalog == null ? null : hostCatalog.Selected;
+        address = host == null ? "" : host.Endpoint.Address;
+        port = host == null ? 0 : host.Endpoint.Port;
+        error = host == null ? "请选择代理主机。" : null;
         return error == null;
     }
 
-    private static bool IsValidProxyHost(string address)
+    private void PopulateHosts()
     {
-        if (address.IndexOfAny(new char[] { '/', '\\', ' ', '\t', '\r', '\n', '@' }) >= 0) return false;
-        if (address.IndexOf("://", StringComparison.Ordinal) >= 0) return false;
-        IPAddress parsed;
-        if (IPAddress.TryParse(address, out parsed)) return true;
-        if (address.Length > 253 || address.StartsWith(".") || address.EndsWith(".")) return false;
-        string[] labels = address.Split('.');
-        foreach (string label in labels)
+        suppressSelection = true;
+        hostCombo.Items.Clear();
+        foreach (ProxyHost host in hostCatalog.Hosts) hostCombo.Items.Add(host);
+        hostCombo.SelectedItem = hostCatalog.Selected;
+        suppressSelection = false;
+        UpdateHostPreview();
+    }
+
+    private void UpdateHostPreview()
+    {
+        ProxyHost host = hostCatalog.Selected;
+        addressPreview.Text = host.Endpoint.Address;
+        currentProxyToolTip.SetToolTip(addressPreview, host.Endpoint.Address);
+        portPreview.Text = host.Endpoint.Port.ToString();
+        resultLabel.Text = "";
+        UpdateProxyMismatch();
+    }
+
+    private void HostSelectionChanged(object sender, EventArgs e)
+    {
+        if (suppressSelection || hostCatalog == null || hostCombo.SelectedItem == null) return;
+        string previousId = hostCatalog.SelectedId;
+        hostCatalog.SelectedId = ((ProxyHost)hostCombo.SelectedItem).Id;
+        try { hostCatalog.Save(); }
+        catch (Exception ex)
         {
-            if (label.Length == 0 || label.Length > 63 || label[0] == '-' || label[label.Length - 1] == '-') return false;
-            foreach (char character in label)
-                if (!(char.IsLetterOrDigit(character) || character == '-')) return false;
+            hostCatalog.SelectedId = previousId;
+            PopulateHosts();
+            validationLabel.Text = "保存主机选择失败：" + ex.Message;
+            validationLabel.ForeColor = palette.Error;
+            return;
         }
-        return true;
+        UpdateHostPreview();
+        ApplySelectedHost();
+    }
+
+    private void ApplySelectedHost()
+    {
+        validationLabel.Text = "";
+        ProxyTakeoverResult observed = proxyLifecycle.ObserveExternalChange();
+        if (observed.NoticeKind == ProxyTakeoverNoticeKind.Error) { ApplyTakeoverResult(observed); return; }
+        ApplyTakeoverResult(proxyLifecycle.SelectEndpoint(hostCatalog.Selected.Endpoint));
+    }
+
+    private void EditHostsClick(object sender, EventArgs e)
+    {
+        ProxyEndpoint previous = hostCatalog.Selected.Endpoint;
+        using (ProxyHostEditor editor = new ProxyHostEditor(hostCatalog, palette))
+        {
+            if (editor.ShowDialog(this) != DialogResult.OK) return;
+            hostCatalog = editor.Catalog;
+        }
+        latencies.Clear();
+        PopulateHosts();
+        if (!string.Equals(previous.GetServerAddress(), hostCatalog.Selected.Endpoint.GetServerAddress(), StringComparison.OrdinalIgnoreCase))
+            ApplySelectedHost();
+    }
+
+    private void DrawHostItem(object sender, DrawItemEventArgs e)
+    {
+        if (e.Index < 0) return;
+        e.DrawBackground();
+        ProxyHost host = (ProxyHost)hostCombo.Items[e.Index];
+        string latency;
+        string text = host.ToString() + (latencies.TryGetValue(host.Id, out latency) ? "  ·  " + latency : "");
+        TextRenderer.DrawText(e.Graphics, text, hostCombo.Font, e.Bounds, e.ForeColor,
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+        e.DrawFocusRectangle();
+    }
+
+    private void StartLatencyTest()
+    {
+        if (latencyWorker.IsBusy || hostCatalog == null) return;
+        latencyButton.Enabled = false;
+        latencyButton.Text = "正在测试…";
+        editHostsButton.Enabled = false;
+        latencies.Clear();
+        foreach (ProxyHost host in hostCatalog.Hosts) latencies[host.Id] = "测试中…";
+        hostCombo.Invalidate();
+        latencyWorker.RunWorkerAsync(hostCatalog.Hosts.ToArray());
+    }
+
+    private static void LatencyWorkerDoWork(object sender, DoWorkEventArgs e)
+    {
+        ProxyHost[] hosts = (ProxyHost[])e.Argument;
+        string[] results = new string[hosts.Length];
+        Parallel.For(0, hosts.Length, new ParallelOptions { MaxDegreeOfParallelism = 4 }, delegate(int i)
+        {
+            try { results[i] = ProxyHostProbe.Measure(hosts[i].Endpoint, 1500) + " ms"; }
+            catch { results[i] = "不可达"; }
+        });
+        e.Result = new object[] { hosts, results };
+    }
+
+    private void LatencyWorkerCompleted(object sender, RunWorkerCompletedEventArgs e)
+    {
+        if (IsDisposed) return;
+        latencyButton.Enabled = true;
+        latencyButton.Text = "测试所有延迟";
+        editHostsButton.Enabled = true;
+        latencies.Clear();
+        if (e.Error == null)
+        {
+            object[] data = (object[])e.Result;
+            ProxyHost[] hosts = (ProxyHost[])data[0];
+            string[] results = (string[])data[1];
+            for (int i = 0; i < hosts.Length; i++) latencies[hosts[i].Id] = results[i];
+        }
+        else { validationLabel.Text = "延迟测试失败，请重试。"; validationLabel.ForeColor = palette.Error; }
+        hostCombo.Invalidate();
+        currentProxyToolTip.SetToolTip(hostCombo, "TCP 连接耗时；展开列表查看所有主机结果。");
     }
 
     private void ProxySwitchChanged(object sender, EventArgs e)
@@ -708,62 +870,16 @@ internal sealed class MainForm : Form
                 return;
             }
             validationLabel.Text = "";
+            ProxyTakeoverResult observed = proxyLifecycle.ObserveExternalChange();
+            if (observed.NoticeKind == ProxyTakeoverNoticeKind.Error) { ApplyTakeoverResult(observed); return; }
             ProxyTakeoverResult result = proxyLifecycle.Enable(new ProxyEndpoint(address, port));
             ApplyTakeoverResult(result);
-            if (result.NoticeKind == ProxyTakeoverNoticeKind.None)
-            {
-                string saveError;
-                if (!TrySaveLastEndpoint(address, port, out saveError))
-                {
-                    validationLabel.Text = "代理已应用，但保存最近端点失败：" + saveError;
-                    validationLabel.ForeColor = palette.Warning;
-                }
-            }
         }
         else
         {
             ApplyTakeoverResult(proxyLifecycle.DisableOrRestore());
         }
     }
-
-    private static bool TrySaveLastEndpoint(string address, int port, out string error)
-    {
-        try
-        {
-            using (RegistryKey key = Registry.CurrentUser.CreateSubKey(ApplicationSettingsPath))
-            {
-                key.SetValue("LastAddress", address, RegistryValueKind.String);
-                key.SetValue("LastPort", port, RegistryValueKind.DWord);
-            }
-            error = null;
-            return true;
-        }
-        catch (Exception ex)
-        {
-            error = ex.Message;
-            return false;
-        }
-    }
-
-    private void LoadLastEndpoint()
-    {
-        try
-        {
-            using (RegistryKey key = Registry.CurrentUser.OpenSubKey(ApplicationSettingsPath))
-            {
-                if (key == null) return;
-                string address = Convert.ToString(key.GetValue("LastAddress", ""));
-                int port = Convert.ToInt32(key.GetValue("LastPort", 0));
-                if (address.Length > 0 && port >= 1 && port <= 65535)
-                {
-                    addressBox.Text = address;
-                    portBox.Text = port.ToString();
-                }
-            }
-        }
-        catch { }
-    }
-
 
     private void TestButtonClick(object sender, EventArgs e)
     {
@@ -784,7 +900,8 @@ internal sealed class MainForm : Form
         resultLabel.ForeColor = palette.MutedText;
         testButton.Text = "正在测试…";
         testButton.Enabled = false;
-        testWorker.RunWorkerAsync(new ProxyEndpoint(address, port));
+        testedEndpoint = new ProxyEndpoint(address, port);
+        testWorker.RunWorkerAsync(testedEndpoint);
     }
 
     private static void TestWorkerDoWork(object sender, DoWorkEventArgs e)
@@ -792,19 +909,11 @@ internal sealed class MainForm : Form
         ProxyEndpoint endpoint = (ProxyEndpoint)e.Argument;
         try
         {
-            using (Ping ping = new Ping())
-            {
-                PingReply reply = ping.Send(endpoint.Address, 3000);
-                if (reply == null || reply.Status != IPStatus.Success)
-                {
-                    e.Result = new TestResult(TestResultKind.Error, "代理主机不可达");
-                    return;
-                }
-            }
+            ProxyHostProbe.Measure(endpoint, 1500);
         }
         catch
         {
-            e.Result = new TestResult(TestResultKind.Error, "代理主机不可达");
+            e.Result = new TestResult(TestResultKind.Error, "代理端口不可达");
             return;
         }
 
@@ -835,8 +944,11 @@ internal sealed class MainForm : Form
 
     private void TestWorkerCompleted(object sender, RunWorkerCompletedEventArgs e)
     {
+        if (IsDisposed) return;
         testButton.Text = "测试连接";
         testButton.Enabled = true;
+        if (hostCatalog == null || !string.Equals(testedEndpoint.GetServerAddress(),
+            hostCatalog.Selected.Endpoint.GetServerAddress(), StringComparison.OrdinalIgnoreCase)) return;
         TestResult result = e.Error == null ? e.Result as TestResult : null;
         if (result == null)
         {
@@ -848,6 +960,19 @@ internal sealed class MainForm : Form
         resultLabel.ForeColor = result.Kind == TestResultKind.Success
             ? palette.Success
             : (result.Kind == TestResultKind.Warning ? palette.Warning : palette.Error);
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            if (statusTimer != null) statusTimer.Dispose();
+            if (currentProxyToolTip != null) currentProxyToolTip.Dispose();
+            if (testWorker != null) testWorker.Dispose();
+            if (latencyWorker != null) latencyWorker.Dispose();
+            if (processWorker != null) processWorker.Dispose();
+        }
+        base.Dispose(disposing);
     }
 
 }
