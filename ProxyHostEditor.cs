@@ -24,7 +24,7 @@ internal sealed class ProxyHostEditor : Form
         MaximizeBox = false;
 
         Label hint = new Label();
-        hint.Text = "内置主机固定不可修改；可添加、编辑或删除自定义主机。";
+        hint.Text = "在此添加、编辑或删除自己的主机；内置主机在主界面选择。";
         hint.SetBounds(16, 14, 560, 24);
         hint.Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Right;
         Controls.Add(hint);
@@ -57,10 +57,9 @@ internal sealed class ProxyHostEditor : Form
         foreach (DataGridViewColumn column in grid.Columns) column.SortMode = DataGridViewColumnSortMode.NotSortable;
         foreach (ProxyHost host in catalog.Hosts)
         {
+            if (host.IsBuiltIn) continue;
             int row = grid.Rows.Add(host.Name, host.Endpoint.Address, host.Endpoint.Port);
             grid.Rows[row].Tag = host.Id;
-            grid.Rows[row].ReadOnly = host.IsBuiltIn;
-            if (host.IsBuiltIn) grid.Rows[row].Cells[0].Value = host.Name + "（内置）";
         }
         Controls.Add(grid);
 
