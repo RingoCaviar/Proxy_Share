@@ -211,9 +211,9 @@ internal static class ProxyTakeoverLifecycleTests
     private static void HostCatalogRoundTrip()
     {
         ProxyHostCatalog catalog = ProxyHostCatalog.Defaults();
-        Equal("一帆", catalog.Hosts[0].Name);
+        Equal("瘦羊羊", catalog.Hosts[0].Name);
         Equal("192.168.1.72:7897", catalog.Hosts[0].Endpoint.GetServerAddress());
-        Equal("赵博", catalog.Hosts[1].Name);
+        Equal("David·博", catalog.Hosts[1].Name);
         Equal("192.168.1.4:7892", catalog.Hosts[1].Endpoint.GetServerAddress());
         ProxyHost edited;
         string error;
@@ -231,7 +231,7 @@ internal static class ProxyTakeoverLifecycleTests
         ProxyHostCatalog catalog = ProxyHostCatalog.Defaults();
         catalog.Hosts.RemoveAt(1);
         ProxyHostCatalog loaded = ProxyHostCatalog.Parse(catalog.Serialize());
-        Equal("一帆", loaded.Selected.Name);
+        Equal("瘦羊羊", loaded.Selected.Name);
     }
 
     private static void InvalidHostCatalogRejected()

@@ -69,8 +69,8 @@ internal sealed class ProxyHostCatalog
     public static ProxyHostCatalog Defaults()
     {
         ProxyHostCatalog catalog = new ProxyHostCatalog();
-        catalog.Hosts.Add(new ProxyHost("yifan", "一帆", new ProxyEndpoint("192.168.1.72", 7897)));
-        catalog.Hosts.Add(new ProxyHost("zhaobo", "赵博", new ProxyEndpoint("192.168.1.4", 7892)));
+        catalog.Hosts.Add(new ProxyHost("yifan", "瘦羊羊", new ProxyEndpoint("192.168.1.72", 7897)));
+        catalog.Hosts.Add(new ProxyHost("zhaobo", "David·博", new ProxyEndpoint("192.168.1.4", 7892)));
         catalog.SelectedId = "zhaobo";
         return catalog;
     }
@@ -100,6 +100,8 @@ internal sealed class ProxyHostCatalog
                 throw new FormatException("主机数据格式不正确。");
             if (!ProxyHost.TryCreate(fields[0], Encoding.UTF8.GetString(Convert.FromBase64String(fields[1])),
                 fields[2], fields[3], out host, out error)) throw new FormatException(error);
+            if (host.Id == "yifan" && host.Name == "一帆") host = new ProxyHost(host.Id, "瘦羊羊", host.Endpoint);
+            if (host.Id == "zhaobo" && host.Name == "赵博") host = new ProxyHost(host.Id, "David·博", host.Endpoint);
             catalog.Hosts.Add(host);
         }
         if (catalog.Selected == null) catalog.SelectedId = catalog.Hosts[0].Id;
