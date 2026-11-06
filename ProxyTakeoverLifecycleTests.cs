@@ -48,6 +48,7 @@ internal static class ProxyTakeoverLifecycleTests
         Run("恢复快照和退出标记通过文件完整保存", TakeoverFileRoundTrip);
         Run("文件保存失败不会破坏已有数据", FileSaveFailureKeepsExistingData);
         Run("旧恢复快照转换保留完整配置", LegacyRecoveryConversion);
+        Run("退出软件及正常重启均保持代理设置", ExitAndRestartKeepProxy);
         Run("开关支持键盘和可访问状态", SwitchKeyboardAndAccessibility);
         Run("编辑窗口空状态提供添加入口", EditorEmptyStateHasAddAction);
         Console.WriteLine(failures == 0 ? "全部生命周期测试通过。" : failures + " 个测试失败。");
@@ -63,6 +64,23 @@ internal static class ProxyTakeoverLifecycleTests
         ProxyTakeoverResult restored = lifecycle.DisableOrRestore();
         Equal("old:80", restored.Configuration.ProxyServer);
         False(store.HasTakeover);
+    }
+
+    private static void ExitAndRestartKeepProxy()
+    {
+        FakeProxyTakeoverStore store = new FakeProxyTakeoverStore(Disabled("old:80"));
+        ProxyTakeoverLifecycle lifecycle = new ProxyTakeoverLifecycle(store);
+        lifecycle.Enable(new ProxyEndpoint("192.168.1.4", 7892));
+        ProxyConfiguration applied = store.Current.Clone();
+        ProxyTakeoverResult exited = lifecycle.MarkCleanExit();
+        Equal(ProxyTakeoverNoticeKind.None, exited.NoticeKind);
+        Equal(applied, store.Current);
+        Equal(true, store.CleanExit);
+        ProxyTakeoverResult restarted = new ProxyTakeoverLifecycle(store).Initialize();
+        Equal(ProxyTakeoverState.Managed, restarted.State);
+        Equal(ProxyTakeoverNoticeKind.None, restarted.NoticeKind);
+        Equal(applied, store.Current);
+        Equal(true, store.Current.ProxyEnabled);
     }
 
     private static void SwitchKeyboardAndAccessibility()

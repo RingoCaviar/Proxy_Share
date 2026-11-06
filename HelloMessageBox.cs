@@ -221,7 +221,7 @@ internal sealed class ToggleSwitch : Control
     {
         bool changed = isOn != value;
         isOn = value;
-        AccessibleDescription = value ? "已使用所选主机；关闭后恢复原代理设置" : "未使用所选主机；按空格启用";
+        AccessibleDescription = value ? "已使用所选主机；关闭此开关恢复原代理，退出软件保留设置" : "未使用所选主机；按空格启用，退出软件保留设置";
         if (changed) AccessibilityNotifyClients(AccessibleEvents.StateChange, -1);
         animationTarget = value ? 100 : 0;
         if (animate)
@@ -819,7 +819,7 @@ internal sealed class MainForm : Form
         suppressToggle = false;
         switchHintLabel.Text = proxyMismatch
             ? "开启开关即可应用所选主机。"
-            : (proxySwitch.IsOn ? "关闭后恢复接管前的系统代理设置" : "开启后将所选主机用于系统代理");
+            : (proxySwitch.IsOn ? "关闭此开关恢复原代理；退出软件保留设置" : "开启后使用所选主机；退出软件保留设置");
         switchHintLabel.ForeColor = proxyMismatch ? palette.Warning : palette.MutedText;
         if (visibilityChanged) LayoutControls();
         statusDot.ForeColor = proxyMismatch ? palette.Warning :
