@@ -34,7 +34,9 @@ internal static class ProxyTakeoverLifecycleTests
         Run("损坏的主机列表不会被部分读取", InvalidHostCatalogRejected);
         Run("非法主机端点被拒绝", InvalidHostRejected);
         Run("识别其他代理进程名称", OtherProxyProcessesRecognized);
-        Run("TCP 延迟测试连接实际代理端口", TcpProbeUsesPort);
+        Run("代理延迟包括 Google 请求和响应等待时间", GoogleProbeMeasuresResponseDelay);
+        Run("代理异常响应不能被当成 Google 延迟", GoogleProbeRejectsUnexpectedResponse);
+        Run("Google 延迟测试遵守请求超时", GoogleProbeTimesOut);
         Console.WriteLine(failures == 0 ? "全部生命周期测试通过。" : failures + " 个测试失败。");
         return failures == 0 ? 0 : 1;
     }
@@ -160,17 +162,44 @@ internal static class ProxyTakeoverLifecycleTests
         False(OtherProxyDetector.IsProxyProcess("explorer"));
     }
 
-    private static void TcpProbeUsesPort()
+    private static void GoogleProbeMeasuresResponseDelay()
     {
-        System.Net.Sockets.TcpListener listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
-        listener.Start();
-        int port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
-        try { Equal(true, ProxyHostProbe.Measure(new ProxyEndpoint("127.0.0.1", port), 1000) >= 1); }
-        finally { listener.Stop(); }
-        try { ProxyHostProbe.Measure(new ProxyEndpoint("127.0.0.1", port), 1000); }
-        catch (System.Net.Sockets.SocketException) { return; }
-        catch (TimeoutException) { return; }
-        throw new Exception("关闭的代理端口不应被判为可达");
+        using (FakeGoogleProxy proxy = new FakeGoogleProxy(204, 180))
+        {
+            int latency = ProxyHostProbe.Measure(proxy.Endpoint, 2000);
+            if (latency < 150) throw new Exception("延迟必须包含 Google 响应等待，实际仅 " + latency + " ms");
+            Equal(true, proxy.RequestReceived.WaitOne(1000));
+            Equal("GET http://www.google.com/generate_204 HTTP/1.1", proxy.RequestLine);
+        }
+    }
+
+    private static void GoogleProbeRejectsUnexpectedResponse()
+    {
+        foreach (int status in new int[] { 200, 302, 502 })
+        {
+            using (FakeGoogleProxy proxy = new FakeGoogleProxy(status, 0))
+            {
+                bool rejected = false;
+                try { ProxyHostProbe.Measure(proxy.Endpoint, 2000); }
+                catch (System.Net.WebException) { rejected = true; }
+                catch (InvalidOperationException) { rejected = true; }
+                Equal(true, rejected);
+                Equal(true, proxy.RequestReceived.WaitOne(1000));
+                Equal("GET http://www.google.com/generate_204 HTTP/1.1", proxy.RequestLine);
+            }
+        }
+    }
+
+    private static void GoogleProbeTimesOut()
+    {
+        using (FakeGoogleProxy proxy = new FakeGoogleProxy(204, 500))
+        {
+            bool timedOut = false;
+            try { ProxyHostProbe.Measure(proxy.Endpoint, 100); }
+            catch (System.Net.WebException ex) { timedOut = ex.Status == System.Net.WebExceptionStatus.Timeout; }
+            Equal(true, timedOut);
+            Equal(true, proxy.RequestReceived.WaitOne(1000));
+        }
     }
 
     private static void ExternalChangeInvalidatesSnapshot()
@@ -389,6 +418,55 @@ internal static class ProxyTakeoverLifecycleTests
     private static void False(bool value) { if (value) throw new Exception("期望 false，实际 true"); }
     private static void True(bool value) { if (!value) throw new Exception("期望 true，实际 false"); }
     private static void Contains(string expected, string actual) { if (actual == null || actual.IndexOf(expected, StringComparison.Ordinal) < 0) throw new Exception("期望消息包含 [" + expected + "]，实际 [" + actual + "]"); }
+}
+
+// A local forward-proxy fixture verifies the actual Google request without internet access.
+internal sealed class FakeGoogleProxy : IDisposable
+{
+    private readonly System.Net.Sockets.TcpListener listener;
+    private readonly System.Threading.Thread worker;
+    public readonly ProxyEndpoint Endpoint;
+    public readonly System.Threading.ManualResetEvent RequestReceived = new System.Threading.ManualResetEvent(false);
+    public string RequestLine;
+
+    public FakeGoogleProxy(int status, int delay)
+    {
+        listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        listener.Start();
+        Endpoint = new ProxyEndpoint("127.0.0.1", ((System.Net.IPEndPoint)listener.LocalEndpoint).Port);
+        worker = new System.Threading.Thread(delegate()
+        {
+            try
+            {
+                using (System.Net.Sockets.TcpClient client = listener.AcceptTcpClient())
+                using (System.Net.Sockets.NetworkStream stream = client.GetStream())
+                {
+                    stream.ReadTimeout = 2000;
+                    stream.WriteTimeout = 2000;
+                    System.IO.StreamReader reader = new System.IO.StreamReader(stream);
+                    RequestLine = reader.ReadLine();
+                    string line;
+                    while (!string.IsNullOrEmpty(line = reader.ReadLine())) { }
+                    RequestReceived.Set();
+                    System.Threading.Thread.Sleep(delay);
+                    byte[] response = System.Text.Encoding.ASCII.GetBytes("HTTP/1.1 " + status +
+                        " Test\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    stream.Write(response, 0, response.Length);
+                }
+            }
+            catch (System.IO.IOException) { }
+            catch (System.Net.Sockets.SocketException) { }
+            catch (ObjectDisposedException) { }
+        });
+        worker.IsBackground = true;
+        worker.Start();
+    }
+
+    public void Dispose()
+    {
+        listener.Stop();
+        if (worker.Join(3000)) RequestReceived.Dispose();
+    }
 }
 
 internal sealed class FakeProxyTakeoverStore : IProxyTakeoverStore

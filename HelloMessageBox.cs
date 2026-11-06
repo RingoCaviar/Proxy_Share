@@ -414,7 +414,6 @@ internal sealed class MainForm : Form
         hostCombo.DropDownStyle = ComboBoxStyle.DropDownList;
         hostCombo.DrawMode = DrawMode.OwnerDrawFixed;
         hostCombo.ItemHeight = 28;
-        hostCombo.DropDownWidth = 460;
         hostCombo.AccessibleName = "代理主机";
         hostCombo.DrawItem += DrawHostItem;
         hostCombo.SelectedIndexChanged += HostSelectionChanged;
@@ -568,6 +567,7 @@ internal sealed class MainForm : Form
         int gap = 12;
         int addressWidth = innerWidth - portWidth - gap;
         hostCombo.SetBounds(16, 14, innerWidth - 70, 34);
+        hostCombo.DropDownWidth = hostCombo.Width;
         editHostsButton.SetBounds(card.Width - 76, 14, 60, 32);
         addressLabel.SetBounds(16, 57, addressWidth, 19);
         portLabel.SetBounds(16 + addressWidth + gap, 57, portWidth, 19);
@@ -803,9 +803,18 @@ internal sealed class MainForm : Form
         e.DrawBackground();
         ProxyHost host = (ProxyHost)hostCombo.Items[e.Index];
         string latency;
-        string text = host.ToString() + (latencies.TryGetValue(host.Id, out latency) ? "  ·  " + latency : "");
-        TextRenderer.DrawText(e.Graphics, text, hostCombo.Font, e.Bounds, e.ForeColor,
-            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+        Rectangle textBounds = e.Bounds;
+        textBounds.Inflate(-4, 0);
+        if (latencies.TryGetValue(host.Id, out latency))
+        {
+            int latencyWidth = Math.Min(80, textBounds.Width / 2);
+            Rectangle latencyBounds = new Rectangle(textBounds.Right - latencyWidth, textBounds.Top, latencyWidth, textBounds.Height);
+            TextRenderer.DrawText(e.Graphics, latency, hostCombo.Font, latencyBounds, e.ForeColor,
+                TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix);
+            textBounds.Width -= latencyWidth + 8;
+        }
+        TextRenderer.DrawText(e.Graphics, host.ToString(), hostCombo.Font, textBounds, e.ForeColor,
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix);
         e.DrawFocusRectangle();
     }
 
@@ -827,8 +836,9 @@ internal sealed class MainForm : Form
         string[] results = new string[hosts.Length];
         Parallel.For(0, hosts.Length, new ParallelOptions { MaxDegreeOfParallelism = 4 }, delegate(int i)
         {
-            try { results[i] = ProxyHostProbe.Measure(hosts[i].Endpoint, 1500) + " ms"; }
-            catch { results[i] = "不可达"; }
+            try { results[i] = ProxyHostProbe.Measure(hosts[i].Endpoint, 5000) + " ms"; }
+            catch (WebException ex) { results[i] = ex.Status == WebExceptionStatus.Timeout ? "超时" : "访问失败"; }
+            catch { results[i] = "访问失败"; }
         });
         e.Result = new object[] { hosts, results };
     }
@@ -849,7 +859,7 @@ internal sealed class MainForm : Form
         }
         else { validationLabel.Text = "延迟测试失败，请重试。"; validationLabel.ForeColor = palette.Error; }
         hostCombo.Invalidate();
-        currentProxyToolTip.SetToolTip(hostCombo, "TCP 连接耗时；展开列表查看所有主机结果。");
+        currentProxyToolTip.SetToolTip(hostCombo, "通过各主机代理访问 Google 的请求耗时；展开列表查看所有结果。");
     }
 
     private void ProxySwitchChanged(object sender, EventArgs e)
@@ -909,32 +919,14 @@ internal sealed class MainForm : Form
         ProxyEndpoint endpoint = (ProxyEndpoint)e.Argument;
         try
         {
-            ProxyHostProbe.Measure(endpoint, 1500);
+            int latency = ProxyHostProbe.Measure(endpoint, 5000);
+            e.Result = new TestResult(TestResultKind.Success, "连接成功，Google 延迟 " + latency + " ms");
         }
-        catch
+        catch (WebException ex)
         {
-            e.Result = new TestResult(TestResultKind.Error, "代理端口不可达");
-            return;
-        }
-
-        try
-        {
-            HttpWebRequest request = (HttpWebRequest)WebRequest.Create("http://www.google.com/generate_204");
-            request.Proxy = new WebProxy(endpoint.Address, endpoint.Port);
-            request.Timeout = 5000;
-            request.ReadWriteTimeout = 5000;
-            request.AllowAutoRedirect = false;
-            using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
-            {
-                int code = (int)response.StatusCode;
-                e.Result = code >= 200 && code < 400
-                    ? new TestResult(TestResultKind.Success, "连接成功，代理可以使用")
-                    : new TestResult(TestResultKind.Warning, "主机可达，但代理响应异常") ;
-            }
-        }
-        catch (WebException)
-        {
-            e.Result = new TestResult(TestResultKind.Warning, "主机可达，但无法通过代理访问网络");
+            e.Result = new TestResult(TestResultKind.Warning, ex.Status == WebExceptionStatus.Timeout
+                ? "通过代理访问 Google 超时"
+                : "无法通过代理访问 Google，请检查配置");
         }
         catch
         {

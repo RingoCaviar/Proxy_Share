@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Net;
-using System.Net.Sockets;
 using System.Text;
 using Microsoft.Win32;
 
@@ -149,19 +148,30 @@ internal sealed class ProxyHostCatalog
 
 internal static class ProxyHostProbe
 {
-    // TCP connection time to the actual proxy port; ICMP may be blocked on a working host.
+    // Measure an actual Google request through this endpoint, independently of system proxy state.
     public static int Measure(ProxyEndpoint endpoint, int timeout)
     {
-        using (TcpClient client = new TcpClient())
+        HttpWebRequest request = (HttpWebRequest)WebRequest.Create("http://www.google.com/generate_204");
+        request.Proxy = new WebProxy(endpoint.Address, endpoint.Port);
+        request.Timeout = timeout;
+        request.ReadWriteTimeout = timeout;
+        request.AllowAutoRedirect = false;
+        request.KeepAlive = false;
+        request.CachePolicy = new System.Net.Cache.RequestCachePolicy(System.Net.Cache.RequestCacheLevel.NoCacheNoStore);
+        Stopwatch watch = Stopwatch.StartNew();
+        try
         {
-            Stopwatch watch = Stopwatch.StartNew();
-            IAsyncResult connect = client.BeginConnect(endpoint.Address, endpoint.Port, null, null);
-            using (System.Threading.WaitHandle wait = connect.AsyncWaitHandle)
+            using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
             {
-                if (!wait.WaitOne(timeout)) throw new TimeoutException("连接超时");
-                client.EndConnect(connect);
+                if (response.StatusCode != HttpStatusCode.NoContent)
+                    throw new InvalidOperationException("Google 未返回预期的 204 响应。");
+                return (int)Math.Max(1, watch.ElapsedMilliseconds);
             }
-            return (int)Math.Max(1, watch.ElapsedMilliseconds);
+        }
+        catch (WebException ex)
+        {
+            if (ex.Response != null) ex.Response.Close();
+            throw;
         }
     }
 }
