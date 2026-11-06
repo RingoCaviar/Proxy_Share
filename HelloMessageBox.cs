@@ -633,7 +633,9 @@ internal sealed class MainForm : Form
     private void LayoutControls()
     {
         if (resultLabel == null || conflictLabel == null) return;
-        int contentWidth = ClientSize.Width - 40;
+        // WinForms can report transient narrow client bounds during initialization/scaling.
+        // Keep the layout arithmetic valid until the normal minimum size is restored.
+        int contentWidth = Math.Max(300, ClientSize.Width - 40);
         int left = 20;
         bool showMismatch = mismatchPanel != null && mismatchPanel.Visible;
         int conflictHeight = conflictLabel.Visible ? 52 : 0;
@@ -664,7 +666,7 @@ internal sealed class MainForm : Form
         int gap = 12;
         int addressWidth = innerWidth - portWidth - gap;
         hostCombo.SetBounds(16, 14, innerWidth - 70, 34);
-        hostCombo.DropDownWidth = hostCombo.Width;
+        hostCombo.DropDownWidth = Math.Max(1, hostCombo.Width);
         editHostsButton.SetBounds(card.Width - 76, 14, 60, 32);
         addressLabel.SetBounds(16, 57, addressWidth, 19);
         portLabel.SetBounds(16 + addressWidth + gap, 57, portWidth, 19);

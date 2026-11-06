@@ -49,6 +49,7 @@ internal static class ProxyTakeoverLifecycleTests
         Run("文件保存失败不会破坏已有数据", FileSaveFailureKeepsExistingData);
         Run("旧恢复快照转换保留完整配置", LegacyRecoveryConversion);
         Run("退出软件及正常重启均保持代理设置", ExitAndRestartKeepProxy);
+        Run("缩放期间临时窄布局不会设置零下拉宽度", TransientNarrowLayoutKeepsValidDropdown);
         Run("开关支持键盘和可访问状态", SwitchKeyboardAndAccessibility);
         Run("编辑窗口空状态提供添加入口", EditorEmptyStateHasAddAction);
         Console.WriteLine(failures == 0 ? "全部生命周期测试通过。" : failures + " 个测试失败。");
@@ -64,6 +65,31 @@ internal static class ProxyTakeoverLifecycleTests
         ProxyTakeoverResult restored = lifecycle.DisableOrRestore();
         Equal("old:80", restored.Configuration.ProxyServer);
         False(store.HasTakeover);
+    }
+
+    private static void TransientNarrowLayoutKeepsValidDropdown()
+    {
+        FakeProxyTakeoverStore store = new FakeProxyTakeoverStore(Disabled("old:80"));
+        using (MainForm form = new MainForm(new ProxyTakeoverLifecycle(store), ProxyHostCatalog.Defaults(), delegate { }))
+        {
+            form.MinimumSize = System.Drawing.Size.Empty;
+            foreach (int width in new int[] { 0, 100, 140, 142, 200, 380, 420, 620 })
+            {
+                form.ClientSize = new System.Drawing.Size(width, 430);
+                form.PerformLayout();
+                System.Windows.Forms.ComboBox combo = FindControl<System.Windows.Forms.ComboBox>(form);
+                foreach (System.Windows.Forms.Control child in combo.Parent.Controls)
+                    if (child is System.Windows.Forms.Label && child.Text.Length == 0)
+                        child.Text = "布局边界测试：较长提示在缩放期间也应安全显示。";
+                Equal(true, combo.DropDownWidth > 0);
+                if (width >= 380) Equal(combo.Width, combo.DropDownWidth);
+            }
+            foreach (float factor in new float[] { 0.5F, 0.75F, 1.25F, 1.5F, 2F })
+                form.Scale(new System.Drawing.SizeF(factor, factor));
+            form.ClientSize = new System.Drawing.Size(420, 430);
+            System.Windows.Forms.ComboBox restored = FindControl<System.Windows.Forms.ComboBox>(form);
+            Equal(restored.Width, restored.DropDownWidth);
+        }
     }
 
     private static void ExitAndRestartKeepProxy()
