@@ -4,6 +4,7 @@ internal static class ProxyTakeoverLifecycleTests
 {
     private static int failures;
 
+    [STAThread]
     public static int Main()
     {
         Run("启用后可恢复接管前配置", EnableThenRestore);
@@ -37,6 +38,10 @@ internal static class ProxyTakeoverLifecycleTests
         Run("代理延迟包括 Google 请求和响应等待时间", GoogleProbeMeasuresResponseDelay);
         Run("代理异常响应不能被当成 Google 延迟", GoogleProbeRejectsUnexpectedResponse);
         Run("Google 延迟测试遵守请求超时", GoogleProbeTimesOut);
+        Run("切换主机立即同步开启和关闭状态", HostSwitchUpdatesToggleImmediately);
+        Run("切换后发生外部修改立即刷新开关", HostSwitchRereadsLatestSystemState);
+        Run("切换失败后开关反映实际系统代理", FailedHostSwitchUpdatesToggle);
+        Run("切换后系统复读失败不显示开启", HostSwitchReadFailureDoesNotShowOn);
         Console.WriteLine(failures == 0 ? "全部生命周期测试通过。" : failures + " 个测试失败。");
         return failures == 0 ? 0 : 1;
     }
@@ -50,6 +55,103 @@ internal static class ProxyTakeoverLifecycleTests
         ProxyTakeoverResult restored = lifecycle.DisableOrRestore();
         Equal("old:80", restored.Configuration.ProxyServer);
         False(store.HasTakeover);
+    }
+
+    private static void HostSwitchUpdatesToggleImmediately()
+    {
+        foreach (bool enabled in new bool[] { false, true })
+        {
+            ProxyConfiguration current = Disabled("192.168.1.4:7892");
+            if (enabled) current.UseManualProxy("192.168.1.4:7892", "<local>");
+            FakeProxyTakeoverStore store = new FakeProxyTakeoverStore(current);
+            using (MainForm form = new MainForm(new ProxyTakeoverLifecycle(store), ProxyHostCatalog.Defaults(), delegate { }))
+            {
+                System.Windows.Forms.ComboBox combo = FindControl<System.Windows.Forms.ComboBox>(form);
+                ToggleSwitch toggle = FindControl<ToggleSwitch>(form);
+                combo.SelectedIndex = 0;
+                Equal("192.168.1.72:7897", store.Current.ProxyServer);
+                Equal(enabled, toggle.IsOn);
+                combo.SelectedIndex = 1;
+                Equal("192.168.1.4:7892", store.Current.ProxyServer);
+                Equal(enabled, toggle.IsOn);
+            }
+        }
+    }
+
+    private static void HostSwitchRereadsLatestSystemState()
+    {
+        foreach (bool disable in new bool[] { false, true })
+        {
+            ProxyConfiguration current = Disabled("192.168.1.4:7892");
+            current.UseManualProxy("192.168.1.4:7892", "<local>");
+            FakeProxyTakeoverStore store = new FakeProxyTakeoverStore(current);
+            using (MainForm form = new MainForm(new ProxyTakeoverLifecycle(store), ProxyHostCatalog.Defaults(), delegate { }))
+            {
+                bool changed = false;
+                // Another proxy changes Windows settings just after our write verification.
+                store.AfterRead = delegate(ProxyConfiguration read)
+                {
+                    if (changed || !read.UsesEndpoint(new ProxyEndpoint("192.168.1.72", 7897))) return;
+                    changed = true;
+                    if (disable) store.Current.DisableManualProxy();
+                    else store.Current.SetProxyServer("external:9000");
+                };
+                FindControl<System.Windows.Forms.ComboBox>(form).SelectedIndex = 0;
+                Equal(true, changed);
+                False(FindControl<ToggleSwitch>(form).IsOn);
+                Equal(true, HasLabel(form, disable ? "已关闭" : "未生效"));
+            }
+        }
+    }
+
+    private static void FailedHostSwitchUpdatesToggle()
+    {
+        ProxyConfiguration current = Disabled("192.168.1.4:7892");
+        current.UseManualProxy("192.168.1.4:7892", "<local>");
+        FakeProxyTakeoverStore store = new FakeProxyTakeoverStore(current);
+        using (MainForm form = new MainForm(new ProxyTakeoverLifecycle(store), ProxyHostCatalog.Defaults(), delegate { }))
+        {
+            Equal(true, FindControl<ToggleSwitch>(form).IsOn);
+            store.FailNextWrite = true;
+            FindControl<System.Windows.Forms.ComboBox>(form).SelectedIndex = 0;
+            Equal("192.168.1.4:7892", store.Current.ProxyServer);
+            False(FindControl<ToggleSwitch>(form).IsOn);
+            Equal(true, HasLabel(form, "未生效"));
+        }
+    }
+
+    private static void HostSwitchReadFailureDoesNotShowOn()
+    {
+        ProxyConfiguration current = Disabled("192.168.1.4:7892");
+        current.UseManualProxy("192.168.1.4:7892", "<local>");
+        FakeProxyTakeoverStore store = new FakeProxyTakeoverStore(current);
+        using (MainForm form = new MainForm(new ProxyTakeoverLifecycle(store), ProxyHostCatalog.Defaults(), delegate { }))
+        {
+            store.AfterRead = delegate(ProxyConfiguration read)
+            {
+                if (read.UsesEndpoint(new ProxyEndpoint("192.168.1.72", 7897))) store.FailNextRead = true;
+            };
+            FindControl<System.Windows.Forms.ComboBox>(form).SelectedIndex = 0;
+            False(FindControl<ToggleSwitch>(form).IsOn);
+            Equal(true, HasLabel(form, "无法确认"));
+        }
+    }
+
+    private static T FindControl<T>(System.Windows.Forms.Control root) where T : System.Windows.Forms.Control
+    {
+        foreach (System.Windows.Forms.Control child in root.Controls)
+        {
+            T found = child as T ?? FindControl<T>(child);
+            if (found != null) return found;
+        }
+        return null;
+    }
+
+    private static bool HasLabel(System.Windows.Forms.Control root, string text)
+    {
+        foreach (System.Windows.Forms.Control child in root.Controls)
+            if (child is System.Windows.Forms.Label && child.Text == text || HasLabel(child, text)) return true;
+        return false;
     }
 
     private static void SelectWhileDisabled()
@@ -487,8 +589,16 @@ internal sealed class FakeProxyTakeoverStore : IProxyTakeoverStore
     public bool FailNextSave;
     public bool FailNextMarkCleanExit;
     public bool FailNextClear;
+    public Action<ProxyConfiguration> AfterRead;
     public FakeProxyTakeoverStore(ProxyConfiguration current) { Current = current.Clone(); }
-    public ProxyConfiguration ReadCurrent() { ReadCount++; if (FailNextRead || ReadCount == FailReadNumber) { FailNextRead = false; throw new InvalidOperationException("模拟读取失败"); } return Current.Clone(); }
+    public ProxyConfiguration ReadCurrent()
+    {
+        ReadCount++;
+        if (FailNextRead || ReadCount == FailReadNumber) { FailNextRead = false; throw new InvalidOperationException("模拟读取失败"); }
+        ProxyConfiguration read = Current.Clone();
+        if (AfterRead != null) AfterRead(read);
+        return read;
+    }
     public void WriteCurrent(ProxyConfiguration value) { if (WritesToFail > 0) { WritesToFail--; throw new InvalidOperationException("模拟写入失败"); } if (FailNextWrite) { FailNextWrite = false; throw new InvalidOperationException("模拟写入失败"); } if (IgnoreNextWrite) { IgnoreNextWrite = false; return; } Current = value.Clone(); }
     public void NotifyChanged() { if (FailNextNotify) { FailNextNotify = false; throw new InvalidOperationException("模拟系统刷新通知失败"); } }
     public bool TryLoad(out ProxyConfiguration snapshot, out ProxyConfiguration managed, out bool cleanExit) { if (FailNextLoad) { FailNextLoad = false; throw new InvalidOperationException("模拟接管状态读取失败"); } snapshot = Snapshot == null ? null : Snapshot.Clone(); managed = Managed == null ? null : Managed.Clone(); cleanExit = CleanExit; return HasTakeover; }

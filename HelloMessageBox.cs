@@ -371,6 +371,7 @@ internal sealed class MainForm : Form
     private readonly Label resultLabel;
     private readonly BackgroundWorker testWorker;
     private readonly ProxyTakeoverLifecycle proxyLifecycle;
+    private readonly Action<ProxyHostCatalog> saveHostCatalog;
     private ThemePalette palette;
     private bool lightTheme;
     private bool suppressToggle;
@@ -380,6 +381,9 @@ internal sealed class MainForm : Form
     public MainForm() : this(new ProxyTakeoverLifecycle(), null) { }
 
     internal MainForm(ProxyTakeoverLifecycle lifecycle, ProxyHostCatalog catalog)
+        : this(lifecycle, catalog, delegate(ProxyHostCatalog value) { value.Save(); }) { }
+
+    internal MainForm(ProxyTakeoverLifecycle lifecycle, ProxyHostCatalog catalog, Action<ProxyHostCatalog> saveCatalog)
     {
         Text = "局域网代理共享";
         ClientSize = new Size(420, 470);
@@ -480,6 +484,7 @@ internal sealed class MainForm : Form
         testWorker.DoWork += TestWorkerDoWork;
         testWorker.RunWorkerCompleted += TestWorkerCompleted;
         proxyLifecycle = lifecycle;
+        saveHostCatalog = saveCatalog;
         hostCatalog = catalog;
         if (hostCatalog != null) PopulateHosts();
         latencyWorker = new BackgroundWorker();
@@ -661,6 +666,9 @@ internal sealed class MainForm : Form
     private void RefreshProxyStatus()
     {
         ApplyTakeoverResult(proxyLifecycle.ObserveExternalChange());
+        proxySwitch.Refresh();
+        statusDot.Refresh();
+        statusLabel.Refresh();
     }
 
     private void ApplyTakeoverResult(ProxyTakeoverResult result)
@@ -669,9 +677,6 @@ internal sealed class MainForm : Form
         currentConfiguration = current;
         if (current != null)
         {
-            suppressToggle = true;
-            proxySwitch.SetState(hostCatalog != null && current.UsesEndpoint(hostCatalog.Selected.Endpoint), false);
-            suppressToggle = false;
             currentProxyToolTip.SetToolTip(statusLabel, current.GetDetails());
             currentProxyLabel.Text = current.GetSummary();
             currentProxyToolTip.SetToolTip(currentProxyLabel, current.GetDetails());
@@ -762,11 +767,12 @@ internal sealed class MainForm : Form
         if (suppressSelection || hostCatalog == null || hostCombo.SelectedItem == null) return;
         string previousId = hostCatalog.SelectedId;
         hostCatalog.SelectedId = ((ProxyHost)hostCombo.SelectedItem).Id;
-        try { hostCatalog.Save(); }
+        try { saveHostCatalog(hostCatalog); }
         catch (Exception ex)
         {
             hostCatalog.SelectedId = previousId;
             PopulateHosts();
+            RefreshProxyStatus();
             validationLabel.Text = "保存主机选择失败：" + ex.Message;
             validationLabel.ForeColor = palette.Error;
             return;
@@ -779,8 +785,10 @@ internal sealed class MainForm : Form
     {
         validationLabel.Text = "";
         ProxyTakeoverResult observed = proxyLifecycle.ObserveExternalChange();
-        if (observed.NoticeKind == ProxyTakeoverNoticeKind.Error) { ApplyTakeoverResult(observed); return; }
-        ApplyTakeoverResult(proxyLifecycle.SelectEndpoint(hostCatalog.Selected.Endpoint));
+        ProxyTakeoverResult applied = observed.NoticeKind == ProxyTakeoverNoticeKind.Error
+            ? observed : proxyLifecycle.SelectEndpoint(hostCatalog.Selected.Endpoint);
+        ApplyTakeoverResult(applied);
+        RefreshProxyStatus();
     }
 
     private void EditHostsClick(object sender, EventArgs e)
