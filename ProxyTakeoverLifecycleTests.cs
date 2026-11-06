@@ -42,7 +42,8 @@ internal static class ProxyTakeoverLifecycleTests
         Run("切换后发生外部修改立即刷新开关", HostSwitchRereadsLatestSystemState);
         Run("切换失败后开关反映实际系统代理", FailedHostSwitchUpdatesToggle);
         Run("切换后系统复读失败不显示开启", HostSwitchReadFailureDoesNotShowOn);
-        Run("主机文件按 EXE 构建隔离并保存用户编辑", HostFilesAreBuildSpecific);
+        Run("升级保留自定义主机且内置数据不可覆盖", HostFilesAreBuildSpecific);
+        Run("迁移不恢复用户已删除的主机", MigrationPreservesDeletedHosts);
         Run("损坏的主机文件回退内置数据", CorruptHostFileFallsBack);
         Run("恢复快照和退出标记通过文件完整保存", TakeoverFileRoundTrip);
         Run("文件保存失败不会破坏已有数据", FileSaveFailureKeepsExistingData);
@@ -93,17 +94,27 @@ internal static class ProxyTakeoverLifecycleTests
             catalog.SelectedId = "yifan";
             catalog.SaveSelection();
             False(System.IO.File.Exists(firstBuild));
-            catalog.Hosts[0] = new ProxyHost("yifan", "用户自定义", new ProxyEndpoint("proxy.local", 8080));
+            catalog.Hosts.Add(new ProxyHost("custom-test", "用户自定义", new ProxyEndpoint("proxy.local", 8080)));
+            catalog.SelectedId = "custom-test";
             catalog.Save(firstBuild);
             catalog.Save(firstBuild); // Exercise atomic replacement as well as first creation.
             ProxyHostCatalog loaded = ProxyHostCatalog.Load(firstBuild, out warning);
             Equal("用户自定义", loaded.Selected.Name);
             Equal("proxy.local:8080", loaded.Selected.Endpoint.GetServerAddress());
             ProxyHostCatalog upgraded = ProxyHostCatalog.Load(nextBuild, out warning);
-            Equal("David·博", upgraded.Selected.Name);
+            Equal("用户自定义", upgraded.Selected.Name);
             Equal("瘦羊羊", upgraded.Hosts[0].Name);
+            Equal(3, upgraded.Hosts.Count);
+            Equal("用户自定义", upgraded.Hosts[2].Name);
             Equal(true, System.IO.File.Exists(firstBuild));
-            False(System.IO.File.Exists(nextBuild));
+            Equal(true, System.IO.File.Exists(nextBuild));
+            string[] saved = System.IO.File.ReadAllLines(nextBuild);
+            Equal(2, saved.Length);
+            False(saved[1].StartsWith("yifan|"));
+            string malicious = "yifan|" + Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes("覆盖内置")) + "|evil.local|80";
+            ProxyHostCatalog protectedCatalog = ProxyHostCatalog.Parse(new string[] { "yifan", malicious });
+            Equal("瘦羊羊", protectedCatalog.Selected.Name);
+            Equal("192.168.1.72:7897", protectedCatalog.Selected.Endpoint.GetServerAddress());
         });
     }
 
@@ -118,6 +129,24 @@ internal static class ProxyTakeoverLifecycleTests
             Equal("David·博", catalog.Selected.Name);
             Equal(true, warning != null);
             Equal("invalid", System.IO.File.ReadAllText(path));
+        });
+    }
+
+    private static void MigrationPreservesDeletedHosts()
+    {
+        WithTemporaryDirectory(delegate(string directory)
+        {
+            string older = System.IO.Path.Combine(directory, "hosts-old.txt");
+            string newer = System.IO.Path.Combine(directory, "hosts-new.txt");
+            ProxyHostCatalog catalog = ProxyHostCatalog.Defaults();
+            catalog.Hosts.Add(new ProxyHost("deleted", "已删除主机", new ProxyEndpoint("proxy.local", 80)));
+            catalog.Save(older);
+            ProxyHostCatalog.Defaults().Save(newer);
+            System.IO.File.SetLastWriteTimeUtc(older, DateTime.UtcNow.AddDays(-1));
+            string warning;
+            ProxyHostCatalog loaded = ProxyHostCatalog.Load(System.IO.Path.Combine(directory, "custom-hosts.txt"), out warning);
+            Equal(2, loaded.Hosts.Count);
+            Equal("David·博", loaded.Selected.Name);
         });
     }
 
@@ -346,11 +375,11 @@ internal static class ProxyTakeoverLifecycleTests
         Equal("192.168.1.4:7892", catalog.Hosts[1].Endpoint.GetServerAddress());
         ProxyHost edited;
         string error;
-        Equal(true, ProxyHost.TryCreate(catalog.SelectedId, "赵博 | 办公室", "proxy.local", "8080", out edited, out error));
-        catalog.Hosts[1] = edited;
-        catalog.Hosts.RemoveAt(0);
+        Equal(true, ProxyHost.TryCreate("custom-office", "赵博 | 办公室", "proxy.local", "8080", out edited, out error));
+        catalog.Hosts.Add(edited);
+        catalog.SelectedId = edited.Id;
         ProxyHostCatalog loaded = ProxyHostCatalog.Parse(catalog.Serialize());
-        Equal(1, loaded.Hosts.Count);
+        Equal(3, loaded.Hosts.Count);
         Equal("赵博 | 办公室", loaded.Selected.Name);
         Equal("proxy.local:8080", loaded.Selected.Endpoint.GetServerAddress());
     }
@@ -358,9 +387,12 @@ internal static class ProxyTakeoverLifecycleTests
     private static void DeletedSelectionFallsBack()
     {
         ProxyHostCatalog catalog = ProxyHostCatalog.Defaults();
-        catalog.Hosts.RemoveAt(1);
+        catalog.Hosts.Add(new ProxyHost("deleted", "待删除", new ProxyEndpoint("proxy.local", 80)));
+        catalog.SelectedId = "deleted";
+        catalog.Hosts.RemoveAt(2);
+        catalog.SelectedId = "zhaobo";
         ProxyHostCatalog loaded = ProxyHostCatalog.Parse(catalog.Serialize());
-        Equal("瘦羊羊", loaded.Selected.Name);
+        Equal("David·博", loaded.Selected.Name);
     }
 
     private static void InvalidHostCatalogRejected()

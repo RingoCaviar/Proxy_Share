@@ -10,6 +10,12 @@ internal sealed class ProxyHost
     public readonly string Id;
     public readonly string Name;
     public readonly ProxyEndpoint Endpoint;
+    public bool IsBuiltIn { get { return IsBuiltInId(Id); } }
+    public static bool IsBuiltInId(string id)
+    {
+        return string.Equals(id, "yifan", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(id, "zhaobo", StringComparison.OrdinalIgnoreCase);
+    }
 
     public ProxyHost(string id, string name, ProxyEndpoint endpoint)
     {
@@ -81,19 +87,24 @@ internal sealed class ProxyHostCatalog
         List<string> rows = new List<string>();
         rows.Add(SelectedId);
         foreach (ProxyHost host in Hosts)
+        {
+            if (host.IsBuiltIn) continue;
             rows.Add(host.Id + "|" + Convert.ToBase64String(Encoding.UTF8.GetBytes(host.Name)) +
                 "|" + host.Endpoint.Address + "|" + host.Endpoint.Port);
+        }
         return rows.ToArray();
     }
 
     public static ProxyHostCatalog Parse(string[] rows)
     {
-        if (rows == null || rows.Length < 2) throw new FormatException("主机列表为空或格式不正确。");
-        ProxyHostCatalog catalog = new ProxyHostCatalog();
+        if (rows == null || rows.Length < 1) throw new FormatException("主机列表为空或格式不正确。");
+        if (rows.Length == 1 && !ProxyHost.IsBuiltInId(rows[0])) throw new FormatException("主机配置格式不正确。");
+        ProxyHostCatalog catalog = Defaults();
         catalog.SelectedId = rows[0];
         for (int i = 1; i < rows.Length; i++)
         {
             string[] fields = rows[i].Split('|');
+            if (fields.Length == 4 && ProxyHost.IsBuiltInId(fields[0])) continue;
             ProxyHost host;
             string error;
             if (fields.Length != 4 || fields[0].Length == 0 ||
@@ -103,7 +114,7 @@ internal sealed class ProxyHostCatalog
                 fields[2], fields[3], out host, out error)) throw new FormatException(error);
             catalog.Hosts.Add(host);
         }
-        if (catalog.Selected == null) catalog.SelectedId = catalog.Hosts[0].Id;
+        if (catalog.Selected == null) catalog.SelectedId = Defaults().SelectedId;
         return catalog;
     }
 
@@ -122,7 +133,7 @@ internal sealed class ProxyHostCatalog
         warning = null;
         try
         {
-            if (!File.Exists(path)) return Defaults();
+            if (!File.Exists(path)) return LoadLegacyFiles(path, out warning);
             ProxyHostCatalog catalog = Parse(File.ReadAllLines(path, Encoding.UTF8));
             catalog.hasCustomHosts = true;
             return catalog;
@@ -137,6 +148,28 @@ internal sealed class ProxyHostCatalog
     public void Save()
     {
         Save(ApplicationDataFiles.HostsPath);
+    }
+
+    private static ProxyHostCatalog LoadLegacyFiles(string path, out string warning)
+    {
+        warning = null;
+        ProxyHostCatalog merged = Defaults();
+        string directory = Path.GetDirectoryName(Path.GetFullPath(path));
+        if (!Directory.Exists(directory)) return merged;
+        string[] files = Directory.GetFiles(directory, "hosts-*.txt");
+        Array.Sort(files, delegate(string a, string b) { return File.GetLastWriteTimeUtc(b).CompareTo(File.GetLastWriteTimeUtc(a)); });
+        foreach (string file in files)
+        {
+            ProxyHostCatalog candidate;
+            try
+            {
+                candidate = Parse(File.ReadAllLines(file, Encoding.UTF8));
+            }
+            catch (Exception ex) { warning = "部分旧主机文件读取失败：" + ex.Message; continue; }
+            candidate.Save(path);
+            return candidate;
+        }
+        return merged;
     }
 
     internal void Save(string path)
@@ -163,8 +196,7 @@ internal static class ApplicationDataFiles
         }
     }
 
-    public static string HostsPath { get { return Path.Combine(DirectoryPath,
-        "hosts-" + typeof(Program).Module.ModuleVersionId.ToString("N") + ".txt"); } }
+    public static string HostsPath { get { return Path.Combine(DirectoryPath, "custom-hosts.txt"); } }
     public static string TakeoverPath { get { return Path.Combine(DirectoryPath, "takeover.bin"); } }
 
     public static void Write(string path, byte[] data)

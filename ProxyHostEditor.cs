@@ -24,7 +24,7 @@ internal sealed class ProxyHostEditor : Form
         MaximizeBox = false;
 
         Label hint = new Label();
-        hint.Text = "双击单元格编辑主机；保存后应用所选主机的更改。";
+        hint.Text = "内置主机固定不可修改；可添加、编辑或删除自定义主机。";
         hint.SetBounds(16, 14, 560, 24);
         hint.Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Right;
         Controls.Add(hint);
@@ -59,6 +59,8 @@ internal sealed class ProxyHostEditor : Form
         {
             int row = grid.Rows.Add(host.Name, host.Endpoint.Address, host.Endpoint.Port);
             grid.Rows[row].Tag = host.Id;
+            grid.Rows[row].ReadOnly = host.IsBuiltIn;
+            if (host.IsBuiltIn) grid.Rows[row].Cells[0].Value = host.Name + "（内置）";
         }
         Controls.Add(grid);
 
@@ -76,10 +78,15 @@ internal sealed class ProxyHostEditor : Form
             grid.BeginEdit(true);
         };
         Button remove = MakeButton("删除", 104, palette);
+        grid.SelectionChanged += delegate
+        {
+            remove.Enabled = grid.CurrentRow != null && !ProxyHost.IsBuiltInId(Convert.ToString(grid.CurrentRow.Tag));
+        };
+        remove.Enabled = grid.CurrentRow != null && !ProxyHost.IsBuiltInId(Convert.ToString(grid.CurrentRow.Tag));
         remove.Click += delegate
         {
             if (grid.CurrentRow == null) return;
-            if (grid.Rows.Count <= 1) { errorLabel.Text = "请至少保留一个代理主机。"; return; }
+            if (ProxyHost.IsBuiltInId(Convert.ToString(grid.CurrentRow.Tag))) return;
             grid.Rows.Remove(grid.CurrentRow);
             errorLabel.Text = "";
         };
@@ -109,10 +116,11 @@ internal sealed class ProxyHostEditor : Form
     private void SaveClick(object sender, EventArgs e)
     {
         grid.EndEdit();
-        ProxyHostCatalog catalog = new ProxyHostCatalog();
+        ProxyHostCatalog catalog = ProxyHostCatalog.Defaults();
         catalog.SelectedId = selectedId;
         foreach (DataGridViewRow row in grid.Rows)
         {
+            if (ProxyHost.IsBuiltInId(Convert.ToString(row.Tag))) continue;
             ProxyHost host;
             string error;
             if (!ProxyHost.TryCreate((string)row.Tag, Convert.ToString(row.Cells[0].Value),
@@ -124,7 +132,7 @@ internal sealed class ProxyHostEditor : Form
             }
             catalog.Hosts.Add(host);
         }
-        if (catalog.Selected == null) catalog.SelectedId = catalog.Hosts[0].Id;
+        if (catalog.Selected == null) catalog.SelectedId = ProxyHostCatalog.Defaults().SelectedId;
         try { catalog.Save(); }
         catch (Exception ex) { errorLabel.Text = "保存失败，请重试：" + ex.Message; return; }
         Catalog = catalog;
