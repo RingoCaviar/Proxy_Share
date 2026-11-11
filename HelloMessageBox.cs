@@ -406,6 +406,67 @@ internal sealed class AccentButton : Button
     }
 }
 
+internal sealed class ProxyDetectionDetailsDialog : Form
+{
+    public ProxyDetectionDetailsDialog(OtherProxyMatch[] matches, ThemePalette palette, Font font)
+    {
+        Text = "代理软件检测详情";
+        Font = font;
+        AutoScaleMode = AutoScaleMode.Dpi;
+        ClientSize = new Size(460, 248);
+        MinimumSize = new Size(360, 225);
+        StartPosition = FormStartPosition.CenterParent;
+        ShowInTaskbar = false;
+        MinimizeBox = false;
+        MaximizeBox = false;
+        BackColor = palette.Window;
+        ForeColor = palette.Text;
+
+        Label hint = new Label();
+        hint.Text = "以下是启动时检测到的进程和服务。";
+        hint.ForeColor = palette.MutedText;
+        hint.SetBounds(16, 14, 428, 28);
+        hint.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+        Controls.Add(hint);
+
+        TextBox details = new TextBox();
+        details.AccessibleName = "检测到的进程和服务";
+        details.Multiline = true;
+        details.ReadOnly = true;
+        details.ScrollBars = ScrollBars.Vertical;
+        details.BackColor = palette.Input;
+        details.ForeColor = palette.Text;
+        details.Text = string.Join(Environment.NewLine, Array.ConvertAll(matches, DescribeMatch));
+        details.SetBounds(16, 44, 428, 144);
+        details.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
+        details.TabIndex = 0;
+        Controls.Add(details);
+
+        Button close = new Button();
+        close.Text = "关闭";
+        close.FlatStyle = FlatStyle.Flat;
+        close.FlatAppearance.BorderColor = palette.Border;
+        close.BackColor = palette.Card;
+        close.ForeColor = palette.Text;
+        close.DialogResult = DialogResult.Cancel;
+        close.SetBounds(368, 200, 76, 32);
+        close.Anchor = AnchorStyles.Bottom | AnchorStyles.Right;
+        close.TabIndex = 1;
+        Controls.Add(close);
+        AcceptButton = close;
+        CancelButton = close;
+        ActiveControl = close;
+    }
+
+    private static string DescribeMatch(OtherProxyMatch match)
+    {
+        if (match.IsService)
+            return "服务：" + (string.Equals(match.Name, match.DisplayName, StringComparison.Ordinal)
+                ? match.Name : match.DisplayName + "（服务名：" + match.Name + "）");
+        return "进程：" + match.Name + "（PID " + match.ProcessId.Value + "）";
+    }
+}
+
 internal sealed class MainForm : Form
 {
     private const string ThemePath = @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
@@ -426,6 +487,8 @@ internal sealed class MainForm : Form
     private readonly AccentButton editHostsButton;
     private readonly LinkLabel latencyButton;
     private readonly Label conflictLabel;
+    private readonly AccentButton conflictDetailsButton;
+    private OtherProxyMatch[] detectedProxies = new OtherProxyMatch[0];
     private readonly BackgroundWorker latencyWorker;
     private readonly BackgroundWorker processWorker;
     private readonly Timer statusTimer;
@@ -506,8 +569,15 @@ internal sealed class MainForm : Form
         latencyButton.AutoSize = false;
         latencyButton.TextAlign = ContentAlignment.MiddleRight;
         latencyButton.LinkClicked += delegate { StartLatencyTest(); };
-        conflictLabel = MakeLabel("检测到您当前正在运行其他代理软件，请关闭其他代理软件后再使用。", 9F, FontStyle.Regular);
+        conflictLabel = MakeLabel("检测到其他代理软件的进程或服务", 9F, FontStyle.Regular);
+        conflictLabel.TextAlign = ContentAlignment.MiddleLeft;
         conflictLabel.Visible = false;
+        conflictDetailsButton = new AccentButton();
+        conflictDetailsButton.Text = "详情";
+        conflictDetailsButton.AccessibleName = "查看代理软件检测详情";
+        conflictDetailsButton.Secondary = true;
+        conflictDetailsButton.Visible = false;
+        conflictDetailsButton.Click += ShowProxyDetectionDetails;
         validationLabel = MakeLabel("", 8.5F, FontStyle.Regular);
         validationLabel.AutoEllipsis = true;
         validationDetails = new LinkLabel();
@@ -564,13 +634,15 @@ internal sealed class MainForm : Form
         Controls.Add(testButton);
         Controls.Add(resultLabel);
         Controls.Add(conflictLabel);
-        card.TabIndex = 0;
+        Controls.Add(conflictDetailsButton);
+        conflictDetailsButton.TabIndex = 0;
+        card.TabIndex = 1;
         hostCombo.TabIndex = 0;
         editHostsButton.TabIndex = 1;
         latencyButton.TabIndex = 2;
         validationDetails.TabIndex = 3;
-        proxySwitch.TabIndex = 1;
-        testButton.TabIndex = 2;
+        proxySwitch.TabIndex = 2;
+        testButton.TabIndex = 3;
         validationLabel.TextChanged += delegate { currentProxyToolTip.SetToolTip(validationLabel, validationLabel.Text); LayoutControls(); };
 
         testWorker = new BackgroundWorker();
@@ -587,11 +659,8 @@ internal sealed class MainForm : Form
         processWorker.DoWork += delegate(object sender, DoWorkEventArgs e) { e.Result = OtherProxyDetector.FindRunning(); };
         processWorker.RunWorkerCompleted += delegate(object sender, RunWorkerCompletedEventArgs e)
         {
-            if (IsDisposed || e.Error != null) return;
-            string[] names = e.Result as string[];
-            conflictLabel.Visible = names != null && names.Length > 0;
-            if (conflictLabel.Visible) currentProxyToolTip.SetToolTip(conflictLabel, string.Join("、", names));
-            LayoutControls();
+            if (IsDisposed || Disposing || e.Error != null || e.Cancelled) return;
+            UpdateProxyWarning((OtherProxyMatch[])e.Result);
         };
         statusTimer = new Timer();
         statusTimer.Interval = 1000;
@@ -630,6 +699,21 @@ internal sealed class MainForm : Form
         return label;
     }
 
+    private void UpdateProxyWarning(OtherProxyMatch[] matches)
+    {
+        detectedProxies = matches;
+        conflictLabel.Visible = matches.Length > 0;
+        conflictDetailsButton.Visible = matches.Length > 0;
+        LayoutControls();
+    }
+
+    private void ShowProxyDetectionDetails(object sender, EventArgs e)
+    {
+        if (detectedProxies.Length == 0) return;
+        using (ProxyDetectionDetailsDialog dialog = new ProxyDetectionDetailsDialog(detectedProxies, palette, Font))
+            dialog.ShowDialog(this);
+    }
+
     protected override void OnLayout(LayoutEventArgs e)
     {
         base.OnLayout(e);
@@ -638,13 +722,14 @@ internal sealed class MainForm : Form
 
     private void LayoutControls()
     {
-        if (resultLabel == null || conflictLabel == null) return;
+        if (resultLabel == null) return;
         // WinForms can report transient narrow client bounds during initialization/scaling.
         // Keep the layout arithmetic valid until the normal minimum size is restored.
         int contentWidth = Math.Max(300, ClientSize.Width - 40);
         int left = 20;
         bool showMismatch = mismatchPanel != null && mismatchPanel.Visible;
-        int conflictHeight = conflictLabel.Visible ? 52 : 0;
+        int conflictHeight = conflictLabel.Visible ? 42 : 0;
+        int conflictButtonWidth = 60;
         int cardY = 108 + conflictHeight;
         int innerWidth = contentWidth - 32;
         int messageHeight = string.IsNullOrEmpty(validationLabel.Text) ? 0 : TextRenderer.MeasureText(
@@ -661,7 +746,8 @@ internal sealed class MainForm : Form
         currentProxyCaptionLabel.SetBounds(left, 77, 92, 19);
         currentProxyLabel.SetBounds(left + 96, 77, contentWidth - 96, 19);
 
-        conflictLabel.SetBounds(left, 103, contentWidth, 46);
+        conflictLabel.SetBounds(left, 105, contentWidth - conflictButtonWidth - 8, 32);
+        conflictDetailsButton.SetBounds(left + contentWidth - conflictButtonWidth, 105, conflictButtonWidth, 32);
         mismatchPanel.SetBounds(left, cardY + cardHeight + 8, contentWidth, 58);
         mismatchTitleLabel.SetBounds(12, 2, contentWidth - 24, 18);
         mismatchDetailLabel.SetBounds(12, 20, contentWidth - 24, 18);
@@ -728,6 +814,7 @@ internal sealed class MainForm : Form
         validationDetails.LinkColor = palette.Accent;
         validationDetails.ActiveLinkColor = palette.AccentHover;
         conflictLabel.ForeColor = palette.Warning;
+        conflictDetailsButton.ApplyTheme(palette);
         proxySwitch.ApplyTheme(palette);
         testButton.ApplyTheme(palette);
         if (hostCatalog != null) RefreshProxyStatus();

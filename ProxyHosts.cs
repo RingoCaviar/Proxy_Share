@@ -1,7 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Net;
+using System.Security;
+using System.ServiceProcess;
 using System.Text;
 using System.IO;
 
@@ -247,18 +250,74 @@ internal static class ProxyHostProbe
     }
 }
 
+internal sealed class OtherProxyMatch
+{
+    public readonly string Name;
+    public readonly string DisplayName;
+    public readonly int? ProcessId;
+    public bool IsService { get { return !ProcessId.HasValue; } }
+
+    public OtherProxyMatch(string name, int processId)
+    {
+        Name = name;
+        DisplayName = name;
+        ProcessId = processId;
+    }
+
+    public OtherProxyMatch(string name, string displayName)
+    {
+        Name = name;
+        DisplayName = string.IsNullOrWhiteSpace(displayName) ? name : displayName;
+    }
+}
+
 internal static class OtherProxyDetector
 {
     public static bool IsProxyProcess(string name)
     {
-        string normalized = name.ToLowerInvariant().Replace("-", "").Replace("_", "").Replace(" ", "").Replace(".", "");
+        string normalized = NormalizeName(name);
         return normalized.Contains("clashverge") || normalized.Contains("clashparty") ||
             normalized.Contains("flclash") || normalized.Contains("mihomo");
     }
 
-    public static string[] FindRunning()
+    public static OtherProxyMatch FindRunningServiceMatch(string name, string displayName, ServiceControllerStatus status)
     {
-        List<string> names = new List<string>();
+        if (status != ServiceControllerStatus.Running || string.IsNullOrWhiteSpace(name)) return null;
+        if (!IsKnownServiceName(name) && !IsKnownServiceName(displayName)) return null;
+        return new OtherProxyMatch(name, displayName);
+    }
+
+    public static OtherProxyMatch[] FindRunning()
+    {
+        List<OtherProxyMatch> matches = new List<OtherProxyMatch>();
+        // Each source can be unavailable independently on a restricted system.
+        try { AddProcesses(matches); }
+        catch (InvalidOperationException) { }
+        catch (Win32Exception) { }
+        catch (SecurityException) { }
+
+        try { AddServices(matches); }
+        catch (InvalidOperationException) { }
+        catch (Win32Exception) { }
+        catch (SecurityException) { }
+
+        return matches.ToArray();
+    }
+
+    private static string NormalizeName(string name)
+    {
+        return (name ?? "").ToLowerInvariant().Replace("-", "").Replace("_", "").Replace(" ", "").Replace(".", "");
+    }
+
+    private static bool IsKnownServiceName(string name)
+    {
+        // Windows identifiers registered by Clash Verge Rev and FlClash.
+        string normalized = NormalizeName(name);
+        return normalized == "clashvergeservice" || normalized == "flclashhelperservice";
+    }
+
+    private static void AddProcesses(List<OtherProxyMatch> matches)
+    {
         foreach (Process process in Process.GetProcesses())
         {
             using (process)
@@ -266,12 +325,30 @@ internal static class OtherProxyDetector
                 try
                 {
                     string name = process.ProcessName;
-                    if (IsProxyProcess(name) && !names.Contains(name)) names.Add(name);
+                    if (IsProxyProcess(name)) matches.Add(new OtherProxyMatch(name, process.Id));
                 }
                 catch (InvalidOperationException) { }
-                catch (System.ComponentModel.Win32Exception) { }
+                catch (Win32Exception) { }
+                catch (SecurityException) { }
             }
         }
-        return names.ToArray();
+    }
+
+    private static void AddServices(List<OtherProxyMatch> matches)
+    {
+        foreach (ServiceController service in ServiceController.GetServices())
+        {
+            using (service)
+            {
+                try
+                {
+                    OtherProxyMatch match = FindRunningServiceMatch(service.ServiceName, service.DisplayName, service.Status);
+                    if (match != null) matches.Add(match);
+                }
+                catch (InvalidOperationException) { }
+                catch (Win32Exception) { }
+                catch (SecurityException) { }
+            }
+        }
     }
 }

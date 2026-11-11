@@ -23,7 +23,7 @@ if (-not (Test-Path -LiteralPath $compiler -PathType Leaf)) {
     throw ".NET Framework C# compiler not found: $compiler"
 }
 
-$references = 'System.dll', 'System.Drawing.dll', 'System.Windows.Forms.dll', 'Accessibility.dll'
+$references = 'System.dll', 'System.Drawing.dll', 'System.Windows.Forms.dll', 'Accessibility.dll', 'System.ServiceProcess.dll'
 $sources = 'HelloMessageBox.cs', 'ProxyTakeoverLifecycle.cs', 'ProxyHosts.cs', 'ProxyHostEditor.cs'
 
 $tempPath = Join-Path ([System.IO.Path]::GetTempPath()) ('ProxyShareBuild-' + [guid]::NewGuid().ToString('N'))

@@ -1,4 +1,5 @@
 using System;
+using System.ServiceProcess;
 
 internal static class ProxyTakeoverLifecycleTests
 {
@@ -35,6 +36,7 @@ internal static class ProxyTakeoverLifecycleTests
         Run("损坏的主机列表不会被部分读取", InvalidHostCatalogRejected);
         Run("非法主机端点被拒绝", InvalidHostRejected);
         Run("识别其他代理进程名称", OtherProxyProcessesRecognized);
+        Run("仅报告正在运行的已知代理服务并保留服务名称", OtherProxyServicesRecognizedOnlyWhenRunning);
         Run("代理延迟包括 Google 请求和响应等待时间", GoogleProbeMeasuresResponseDelay);
         Run("代理异常响应不能被当成 Google 延迟", GoogleProbeRejectsUnexpectedResponse);
         Run("Google 延迟测试遵守请求超时", GoogleProbeTimesOut);
@@ -554,6 +556,27 @@ internal static class ProxyTakeoverLifecycleTests
             Equal(true, OtherProxyDetector.IsProxyProcess(name));
         False(OtherProxyDetector.IsProxyProcess("ProxyShare"));
         False(OtherProxyDetector.IsProxyProcess("explorer"));
+    }
+
+    private static void OtherProxyServicesRecognizedOnlyWhenRunning()
+    {
+        OtherProxyMatch verge = OtherProxyDetector.FindRunningServiceMatch(
+            "clash_verge_service", "Clash Verge Service", ServiceControllerStatus.Running);
+        Equal(true, verge.IsService);
+        Equal("clash_verge_service", verge.Name);
+        Equal("Clash Verge Service", verge.DisplayName);
+        Equal(null, verge.ProcessId);
+
+        OtherProxyMatch flClash = OtherProxyDetector.FindRunningServiceMatch(
+            "FLCLASHHELPERSERVICE", null, ServiceControllerStatus.Running);
+        Equal("FLCLASHHELPERSERVICE", flClash.DisplayName);
+        Equal("proxy-helper", OtherProxyDetector.FindRunningServiceMatch(
+            "proxy-helper", "Clash Verge Service", ServiceControllerStatus.Running).Name);
+
+        Equal(null, OtherProxyDetector.FindRunningServiceMatch(
+            "clash_verge_service", "Clash Verge Service", ServiceControllerStatus.Stopped));
+        Equal(null, OtherProxyDetector.FindRunningServiceMatch(
+            "clash_verge_service_helper", "Clash Verge Service Helper", ServiceControllerStatus.Running));
     }
 
     private static void GoogleProbeMeasuresResponseDelay()

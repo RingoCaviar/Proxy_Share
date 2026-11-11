@@ -19,7 +19,7 @@ Proxy Share 是一个零第三方依赖的 Windows 桌面小工具，通过当�
 | 路径 | 职责 | 修改提示 |
 | --- | --- | --- |
 | `HelloMessageBox.cs` | 主题、自绘控件、主窗体、代理配置值、主机选择与后台测试协调 | 主界面、状态或连接测试修改首先定位此文件 |
-| `ProxyHosts.cs` | 主机校验、列表序列化、文档目录及原子文件写入、经代理访问 Google 的延迟测试、其他代理进程检测 | 默认主机、文件隔离、延迟与进程规则集中在此文件 |
+| `ProxyHosts.cs` | 主机校验、列表序列化、文档目录及原子文件写入、经代理访问 Google 的延迟测试、其他代理进程和服务检测 | 默认主机、文件隔离、延迟与检测规则集中在此文件 |
 | `ProxyHostEditor.cs` | 独立主机编辑窗口 | 添加、删除、编辑、整表校验与保存；取消不写入 |
 | `ProxyTakeoverLifecycle.cs` | 代理接管生命周期及内部 Windows 注册表 / WinInet 适配器 | 接管、恢复、回滚或外部修改策略集中在此文件 |
 | `ProxyTakeoverLifecycleTests.cs` | 验证接管安全行为、主机管理和隔离的 UI 布局及绘制 | 不得访问真实代理注册表或修改系统代理 |
@@ -41,9 +41,10 @@ Proxy Share 是一个零第三方依赖的 Windows 桌面小工具，通过当�
 2. `ThemePalette`：创建 Windows 11 风格浅色/深色调色板。
 3. `DrawingTools`：提供圆角路径等公共绘制能力。
 4. `CardPanel`、`ThemedTextBox`、`ToggleSwitch`、`AccentButton`：零素材自绘控件。
-5. `MainForm`：创建布局、跟随系统主题、切换主机、发送代理接管意图、呈现结果并协调连接测试、批量延迟测试和进程检测。内部构造函数可注入生命周期、主机列表及列表保存动作，用于完全隔离系统设置和持久化的 UI 验证。
-6. `ProxyConfiguration`：读取、写入、比较、展示和持久化完整代理配置；存在标记保持私有，调用方通过配置转换表达启用或停用手动代理。
-7. `ProxyEndpoint`、`TestResultKind`、`TestResult`：后台测试的数据载体。
+5. `ProxyDetectionDetailsDialog`：用可滚动、可复制的只读文本展示本次启动检测到的进程和服务。
+6. `MainForm`：创建布局、跟随系统主题、切换主机、发送代理接管意图、呈现结果并协调连接测试、批量延迟测试和代理进程及服务检测。内部构造函数可注入生命周期、主机列表及列表保存动作，用于完全隔离系统设置和持久化的 UI 验证。
+7. `ProxyConfiguration`：读取、写入、比较、展示和持久化完整代理配置；存在标记保持私有，调用方通过配置转换表达启用或停用手动代理。
+8. `ProxyEndpoint`、`TestResultKind`、`TestResult`：后台测试的数据载体。
 
 `ProxyTakeoverLifecycle.cs` 提供六个生命周期操作：初始化、启用、切换端点、停用或恢复、观察外部修改、标记正常退出。切换端点保留系统原有启用状态；关闭时只更新地址，保留 PAC 等配置。注册表与 WinInet 适配器是模块内部实现，MainForm 不直接处理恢复快照或回滚。
 
@@ -90,7 +91,9 @@ Proxy Share 是一个零第三方依赖的 Windows 桌面小工具，通过当�
 
 “测试所有延迟”在独立 BackgroundWorker 内以最多 4 路并发调用同一个 ProxyHostProbe.Measure，测量通过每台主机代理请求 `http://www.google.com/generate_204` 至收到 204 响应的耗时；禁用缓存、重定向和连接复用，每请求超时 5 秒，显式指定代理，不依赖系统代理开关。下拉菜单显示毫秒、“超时”或“访问失败”，单独测试连接也显示 Google 延迟。测试期间禁止编辑主机，仍可切换选择；连接测试完成时核对端点，避免把旧主机的结果显示在新主机上。测试使用本地模拟转发代理验证 Google 请求、响应等待和失败，不访问公网或修改系统设置。
 
-启动后另一 BackgroundWorker 枚举进程，匹配忽略大小写与分隔符的 clash verge、clash party、flclash 和 mihomo 名称；发现时显示非模态提示，提示不禁用任何功能、不结束进程。
+### 代理进程和服务提示
+
+启动后由独立的 `BackgroundWorker` 调用 `OtherProxyDetector.FindRunning()`，只读枚举已识别的代理进程，并通过系统框架的 `System.ServiceProcess.dll` 查询正在运行的 Clash Verge 和 FlClash 已知服务。任一来源读取失败时仍保留另一来源的结果。主线程收到检测结果后显示提示和「详情」按钮，详情窗口展示本次启动时匹配的进程名称、PID、服务显示名称和服务名。
 
 ### 主题与布局
 
