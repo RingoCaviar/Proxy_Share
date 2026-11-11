@@ -16,17 +16,28 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Validate tag and version
+      - name: Validate version and release notes
         shell: pwsh
         run: |
-          $version = (Get-Content -Raw VERSION).Trim()
-          $tagVersion = "${{ github.ref_name }}".TrimStart('v')
-          if ($version -notmatch '^\d+\.\d+\.\d+$') {
-            throw "VERSION must use X.Y.Z format; got '$version'."
+          $version = ./build.ps1 -Task Version
+          $tag = "v$version"
+          if ($env:GITHUB_REF_NAME -cne $tag) {
+            throw "Tag '$env:GITHUB_REF_NAME' must match '$tag' from VERSION."
           }
-          if ($tagVersion -ne $version) {
-            throw "Tag version '$tagVersion' does not match VERSION '$version'."
+
+          $notesPath = "docs/releases/$tag.md"
+          if (-not (Test-Path -LiteralPath $notesPath -PathType Leaf)) {
+            throw "Missing release notes: $notesPath."
           }
+          $notes = Get-Content -LiteralPath $notesPath -Raw -Encoding UTF8
+          $heading = [regex]::Escape("# Proxy Share $tag")
+          if ($notes -cnotmatch "\A$heading\r?\n" -or
+              $notes -cnotmatch '(?m)^## (?:新增|改进|修复|构建与发布)\r?\n(?:[ \t]*\r?\n)*- [^\s]') {
+            throw "$notesPath must begin with '# Proxy Share $tag' and include an update bullet under a release notes section."
+          }
+
+          "APP_VERSION=$version" >> $env:GITHUB_ENV
+          "RELEASE_NOTES=$notesPath" >> $env:GITHUB_ENV
 
       - name: Run tests
         shell: cmd
@@ -39,8 +50,13 @@ jobs:
       - name: Package artifacts
         shell: pwsh
         run: |
-          $version = (Get-Content -Raw VERSION).Trim()
-          Compress-Archive -Path ProxyShare.exe, README.md -DestinationPath "ProxyShare-v$version-windows.zip"
+          $version = $env:APP_VERSION
+          $metadata = (Get-Item -LiteralPath ProxyShare.exe).VersionInfo
+          if ($metadata.ProductVersion -cne $version -or $metadata.FileVersion -cne "$version.0") {
+            throw "ProxyShare.exe version metadata must match VERSION ($version)."
+          }
+          Compress-Archive -LiteralPath ProxyShare.exe, README.md, $env:RELEASE_NOTES `
+            -DestinationPath "ProxyShare-v$version-windows.zip"
           Get-FileHash ProxyShare.exe -Algorithm SHA256 |
             ForEach-Object { "$($_.Hash.ToLower())  ProxyShare.exe" } |
             Set-Content -Encoding ascii "ProxyShare-v$version-SHA256.txt"
@@ -50,11 +66,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $version = (Get-Content -Raw VERSION).Trim()
-          gh release create "${{ github.ref_name }}" `
+          $version = $env:APP_VERSION
+          gh release create "$env:GITHUB_REF_NAME" `
             ProxyShare.exe `
             "ProxyShare-v$version-windows.zip" `
             "ProxyShare-v$version-SHA256.txt" `
             --title "Proxy Share v$version" `
-            --generate-notes `
+            --notes-file "$env:RELEASE_NOTES" `
             --verify-tag

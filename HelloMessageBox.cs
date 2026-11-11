@@ -460,7 +460,7 @@ internal sealed class MainForm : Form
 
     internal MainForm(ProxyTakeoverLifecycle lifecycle, ProxyHostCatalog catalog, Action<ProxyHostCatalog> saveCatalog)
     {
-        Text = "局域网代理共享";
+        Text = "局域网代理共享 v" + Application.ProductVersion;
         ClientSize = new Size(420, 430);
         MinimumSize = new Size(396, 469);
         MaximumSize = new Size(636, 749);

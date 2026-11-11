@@ -9,10 +9,9 @@ Proxy Share 是一个零第三方依赖的 Windows 桌面小工具，通过当�
 - 技术栈：C#、WinForms、GDI+、.NET Framework 4.0
 - 程序入口：`Program.Main()`
 - 主源码：`HelloMessageBox.cs`、`ProxyTakeoverLifecycle.cs`、`ProxyHosts.cs`、`ProxyHostEditor.cs`
-- 构建入口：`compile.bat`
-- 版本来源：`VERSION`；构建时写入 EXE 程序集元数据
-- 发布入口：推送 `vX.Y.Z` tag 后由 `.github/workflows/release.yml` 自动创建 GitHub Release
-- 测试入口：`test.bat`
+- 构建与测试入口：`compile.bat`、`test.bat`，共用 `build.ps1`
+- 版本来源：`VERSION`；构建写入 EXE 元数据，主窗口标题显示产品版本
+- 发布入口：推送 `vX.Y.Z` tag 后由 `.github/workflows/release.yml` 构建并发布，正文来自 `docs/releases/vX.Y.Z.md`
 - 产物：`ProxyShare.exe`（不纳入版本控制）
 
 ## 2. 文件定位
@@ -24,8 +23,11 @@ Proxy Share 是一个零第三方依赖的 Windows 桌面小工具，通过当�
 | `ProxyHostEditor.cs` | 独立主机编辑窗口 | 添加、删除、编辑、整表校验与保存；取消不写入 |
 | `ProxyTakeoverLifecycle.cs` | 代理接管生命周期及内部 Windows 注册表 / WinInet 适配器 | 接管、恢复、回滚或外部修改策略集中在此文件 |
 | `ProxyTakeoverLifecycleTests.cs` | 验证接管安全行为、主机管理和隔离的 UI 布局及绘制 | 不得访问真实代理注册表或修改系统代理 |
-| `compile.bat` | 使用 .NET Framework 4.0 `csc.exe` 以 UTF-8 编译 | 新增系统程序集引用时同步修改 |
-| `test.bat` | 在临时目录编译并运行零依赖生命周期测试 | 修改代理接管逻辑后运行 |
+| `compile.bat`、`test.bat` | 调用 `build.ps1` 的 `Build`、`Test` 任务 | 维护现有命令行入口 |
+| `build.ps1` | 使用 .NET Framework 4.0 `csc.exe`，共用 UTF-8 编译设置、系统程序集引用、应用源码和版本元数据；测试在临时目录运行 | 修改源码清单或程序集引用时在此更新 |
+| `VERSION` | 应用版本，使用十进制进位的 `X.Y.Z` | 发布时与对应说明同提交更新 |
+| `.github/workflows/release.yml` | 校验版本、tag 和说明，再测试、构建、打包并发布 | 流程使用 `build.ps1 -Task Version` 读取和校验版本 |
+| `docs/releases/vX.Y.Z.md` | 对应 tag 的 GitHub Release 正文 | 写清用户可见的改动和升级注意事项 |
 | `CONTEXT.md` | 项目领域语言 | 领域术语明确后同步更新 |
 | `logo.ico` | EXE 与窗口图标 | 保持轻量；编译时嵌入 |
 | `logo.jpg` | 未使用的历史图片 | 不参与构建与版本控制 |
@@ -93,6 +95,7 @@ Proxy Share 是一个零第三方依赖的 Windows 桌面小工具，通过当�
 ### 主题与布局
 
 - 主题来源：`HKCU\...\Themes\Personalize\AppsUseLightTheme`。
+- 主窗口标题读取构建时写入的产品版本，方便核对当前运行的 EXE。
 - 窗口激活时检测主题变化并复读系统代理状态。
 - `LayoutControls()` 根据代理不一致、其他软件提示及消息长度排列主机卡片、开关和测试区；默认客户区 `420×430`，最小约 `380×430`，最大约 `620×710`，提示出现时自动增加所需高度。主机选择与启停优先，编辑及测试使用次级按钮。
 - “使用所选主机”开关明确控制当前端点，关闭仍按接管策略恢复原代理，并显示恢复后的实际摘要。支持 Tab 聚焦、Space / Enter 切换、焦点标记与可访问 Checked 状态；状态改变时才通知辅助技术。Accessibility.dll 为系统框架引用，无需随 EXE 分发。
@@ -110,4 +113,5 @@ Proxy Share 是一个零第三方依赖的 Windows 桌面小工具，通过当�
 - 网络：保持后台执行、超时和资源释放。
 - 构建：运行 `cmd /c compile.bat`，确保无额外 DLL 且 EXE 维持轻量。
 - 测试：运行 `cmd /c test.bat`，覆盖启用、恢复、外部修改、读写/通知/复读失败、回滚失败和异常退出恢复，且不触碰真实系统代理。
+- 发布：确认 `VERSION`、tag 与 `docs/releases/` 中的文件名和标题一致。次版本和修订版本各占一位，满十向前进一位。确认 GitHub Release 的正文和下载附件齐全。
 - 结构：新增类型、文件、入口或数据流后更新本地图。

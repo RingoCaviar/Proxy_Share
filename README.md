@@ -19,26 +19,31 @@
 
 ## 🛠️ 构建
 
-需要 Windows 与 .NET Framework 4.0：
+需要 Windows、Windows PowerShell 和 .NET Framework 4.0 的 `csc.exe`。
 
 ```bat
 compile.bat
+test.bat
 ```
 
-构建结果为 `ProxyShare.exe`。
+`compile.bat` 在仓库根目录生成 `ProxyShare.exe`。`test.bat` 在临时目录编译并运行测试。两个入口共用 `build.ps1` 的编译配置。
 
-当前版本记录在 [`VERSION`](VERSION) 中，构建产物的文件版本与程序集版本会自动采用该值。
+[`VERSION`](VERSION) 是唯一的版本来源。主窗口标题与 EXE 的产品版本显示 `X.Y.Z`，文件版本与程序集版本使用 `X.Y.Z.0`。
 
 ## 📦 发布
 
-发布新版本时，先更新 `VERSION`（格式为 `X.Y.Z`）并提交，然后创建并推送同版本 tag：
+每次发布将 `VERSION` 递增一次。`X.Y.Z` 按十进制进位，`Y` 和 `Z` 各占一位，`X` 不补零。例如 `1.0.8` → `1.0.9` → `1.1.0`，`1.9.9` → `2.0.0`。
+
+1. 更新 `VERSION`，在同一次提交中添加 `docs/releases/vX.Y.Z.md`。第一行用 `# Proxy Share vX.Y.Z`，在「新增」「改进」「修复」「构建与发布」至少一个小节中列出本次具体改动，涉及升级操作时补充说明。可参考 [v1.0.1 发布说明](docs/releases/v1.0.1.md)。
+2. 运行 `test.bat` 和 `compile.bat`，核对 EXE 的产品版本，再提交并推送分支。
+3. 在该提交上创建并推送与 `VERSION` 一致的 tag。以 `1.0.1` 为例。
 
 ```bash
-git tag v1.0.0
-git push origin v1.0.0
+git tag -a v1.0.1 -m "Proxy Share v1.0.1"
+git push origin v1.0.1
 ```
 
-GitHub Actions 会自动运行测试、编译 Windows EXE，并创建 GitHub Release。Release 包含单独的 `ProxyShare.exe`、ZIP 压缩包及 SHA-256 校验文件。tag 版本必须与 `VERSION` 完全一致。
+GitHub Actions 会校验 tag、`VERSION` 和对应的发布说明，然后运行测试、编译 EXE，并将提交中的说明用作 GitHub Release 正文。Release 附带 `ProxyShare.exe`、ZIP 压缩包和 EXE 的 SHA-256 校验文件。ZIP 也包含本次发布说明。
 
 ## 🚀 使用
 
