@@ -93,7 +93,7 @@ Proxy Share 是一个零第三方依赖的 Windows 桌面小工具，通过当�
 
 ### 代理进程和服务提示
 
-启动后由独立的 `BackgroundWorker` 调用 `OtherProxyDetector.FindRunning()`，只读枚举已识别的代理进程，并通过系统框架的 `System.ServiceProcess.dll` 查询正在运行的 Clash Verge 和 FlClash 已知服务。任一来源读取失败时仍保留另一来源的结果。主线程收到检测结果后显示提示和「详情」按钮，详情窗口展示本次启动时匹配的进程名称、PID、服务显示名称和服务名。
+启动后由独立的 `BackgroundWorker` 调用 `OtherProxyDetector.FindRunning()`，只读枚举已识别的代理进程，并通过系统框架的 `System.ServiceProcess.dll` 查询正在运行的 Clash Verge 和 FlClash 已知服务。任一来源读取失败时仍保留另一来源的结果。主线程收到检测结果后显示提示和「详情」按钮，详情窗口展示本次启动时匹配的进程名称、PID、服务显示名称和服务名。提示改变主机卡片位置后，`UpdateProxyWarning()` 在布局完成后请求主窗体及子控件重绘，清除原生下拉框等控件的旧位置残影。
 
 ### 主题与布局
 

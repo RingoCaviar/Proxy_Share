@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.InteropServices;
 using System.ServiceProcess;
 
 internal static class ProxyTakeoverLifecycleTests
@@ -53,6 +54,7 @@ internal static class ProxyTakeoverLifecycleTests
         Run("退出软件及正常重启均保持代理设置", ExitAndRestartKeepProxy);
         Run("缩放期间临时窄布局不会设置零下拉宽度", TransientNarrowLayoutKeepsValidDropdown);
         Run("圆角按钮首次绘制及缩放后不残留旧像素", RoundedButtonsPaintTheirEntireBackground);
+        Run("启动检测提示移动卡片后重绘卡片与下拉框", StartupWarningRepaintsMovedControls);
         Run("开关支持键盘和可访问状态", SwitchKeyboardAndAccessibility);
         Run("编辑窗口空状态提供添加入口", EditorEmptyStateHasAddAction);
         Console.WriteLine(failures == 0 ? "全部生命周期测试通过。" : failures + " 个测试失败。");
@@ -141,6 +143,56 @@ internal static class ProxyTakeoverLifecycleTests
             }
         }
     }
+
+    private static void StartupWarningRepaintsMovedControls()
+    {
+        FakeProxyTakeoverStore store = new FakeProxyTakeoverStore(Disabled("old:80"));
+        using (MainForm form = new MainForm(new ProxyTakeoverLifecycle(store), ProxyHostCatalog.Defaults(), delegate { }))
+        {
+            // Create visible HWNDs off-screen without pumping the queued Shown handler.
+            form.ShowInTaskbar = false;
+            form.StartPosition = System.Windows.Forms.FormStartPosition.Manual;
+            System.Drawing.Rectangle desktop = System.Windows.Forms.SystemInformation.VirtualScreen;
+            form.Location = new System.Drawing.Point(desktop.Left - form.MaximumSize.Width - 20, desktop.Top);
+            form.Show();
+
+            CardPanel card = FindControl<CardPanel>(form);
+            System.Windows.Forms.ComboBox combo = FindControl<System.Windows.Forms.ComboBox>(card);
+            ValidateRect(card.Handle, IntPtr.Zero);
+            ValidateRect(combo.Handle, IntPtr.Zero);
+            int oldCardTop = card.Top;
+            typeof(MainForm).GetMethod("UpdateProxyWarning",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                .Invoke(form, new object[] { new OtherProxyMatch[] { new OtherProxyMatch("clash", 1) } });
+
+            True(card.Top > oldCardTop);
+            AssertClientUpdateBounds(card);
+            AssertClientUpdateBounds(combo);
+        }
+    }
+
+    private static void AssertClientUpdateBounds(System.Windows.Forms.Control control)
+    {
+        NativeRect update;
+        if (!GetUpdateRect(control.Handle, out update, false))
+            throw new Exception(control.GetType().Name + " 没有待重绘区域");
+        Equal(control.ClientRectangle, System.Drawing.Rectangle.FromLTRB(update.Left, update.Top, update.Right, update.Bottom));
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeRect
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern bool GetUpdateRect(IntPtr window, out NativeRect update, bool erase);
+
+    [DllImport("user32.dll")]
+    private static extern bool ValidateRect(IntPtr window, IntPtr rect);
 
     private static void ExitAndRestartKeepProxy()
     {

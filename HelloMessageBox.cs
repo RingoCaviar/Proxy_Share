@@ -705,6 +705,8 @@ internal sealed class MainForm : Form
         conflictLabel.Visible = matches.Length > 0;
         conflictDetailsButton.Visible = matches.Length > 0;
         LayoutControls();
+        // Repaint the old and new positions of the card and its native child windows.
+        Invalidate(true);
     }
 
     private void ShowProxyDetectionDetails(object sender, EventArgs e)
